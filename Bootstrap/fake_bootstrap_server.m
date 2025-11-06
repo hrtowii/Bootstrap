@@ -50,16 +50,23 @@ void fake_bootstrap_server(mach_port_t server_port) {
     } while(true);
 }
 
-mach_port_t setup_fake_bootstrap_server(void) {
+static void* fake_bootstrap_server_thread_func(void* arg) {
+    mach_port_t server_port = (mach_port_t)arg;
+    fake_bootstrap_server(server_port);
+    return NULL;
+}
+
+mach_port_t setup_fake_bootstrap_server_with_id(int thread_id) {
     mach_port_t server_port;
     kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &server_port);
     assert(kr == KERN_SUCCESS);
     kr = mach_port_insert_right(mach_task_self(), server_port, server_port, MACH_MSG_TYPE_MAKE_SEND);
     assert(kr == KERN_SUCCESS);
-    kr = bootstrap_register(bootstrap_port, "com.roothide.bootstrap.fake_bootstrap_port", server_port);
+    char port_name[PATH_MAX];
+    snprintf(port_name, sizeof(port_name), "com.roothide.bootstrap.fake_bootstrap_port.%d", thread_id); 
+    kr = bootstrap_register(bootstrap_port, port_name, server_port);
     assert(kr == KERN_SUCCESS);
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        fake_bootstrap_server(server_port);
-    });
+    pthread_t fake_thread;
+    pthread_create(&fake_thread, NULL, fake_bootstrap_server_thread_func, (void*)server_port);
     return server_port;
 }

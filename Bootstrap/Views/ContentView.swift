@@ -101,18 +101,18 @@ struct MainView: View {
                         .frame(maxWidth: .infinity)
                         .padding(25)
                     }
-                    Button {
-                        Haptic.shared.play(.light)
-                        testButtonTapped()
-                    } label: {
-                        Label(
-                            title: {Text("dtsecurity test").bold()},
-                            icon: {Image(systemName: "flame.fill") }
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(25)
-                    }
-
+                    // Button {
+                    //     Haptic.shared.play(.light)
+                    //     testButtonTapped()
+                    // } label: {
+                    //     Label(
+                    //         title: {Text("dtsecurity test").bold()},
+                    //         icon: {Image(systemName: "flame.fill") }
+                    //     )
+                    //     .frame(maxWidth: .infinity)
+                    //     .padding(25)
+                    // }
+                    //
                     Button {
                         Haptic.shared.play(.light)
                         bootstrapAction()

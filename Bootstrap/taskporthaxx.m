@@ -2,9 +2,21 @@
 int child_execve(char *path) {
     mach_port_t exception_port = MACH_PORT_NULL;
     mach_port_t fake_bootstrap_port = MACH_PORT_NULL;
-    bootstrap_look_up(bootstrap_port, "com.roothide.bootstrap.exception_server", &exception_port);
+
+    const char *exception_server_id_str = getenv("EXCEPTION_SERVER_ID");
+    int thread_id = 0;
+    if (exception_server_id_str != NULL) {
+        thread_id = atoi(exception_server_id_str);
+    }
+
+    char exception_service_name[128];
+    char bootstrap_service_name[128];
+    snprintf(exception_service_name, sizeof(exception_service_name), "com.roothide.bootstrap.exception_server.%d", thread_id);
+    snprintf(bootstrap_service_name, sizeof(bootstrap_service_name), "com.roothide.bootstrap.fake_bootstrap_port.%d", thread_id);
+
+    bootstrap_look_up(bootstrap_port, exception_service_name, &exception_port);
     assert(exception_port != MACH_PORT_NULL);
-    bootstrap_look_up(bootstrap_port, "com.roothide.bootstrap.fake_bootstrap_port", &fake_bootstrap_port);
+    bootstrap_look_up(bootstrap_port, bootstrap_service_name, &fake_bootstrap_port);
     assert(fake_bootstrap_port != MACH_PORT_NULL);
     
     task_set_exception_ports(mach_task_self(),

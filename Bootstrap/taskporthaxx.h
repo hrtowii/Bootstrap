@@ -74,7 +74,7 @@ int posix_spawnattr_setexceptionports_np(posix_spawnattr_t *attr,
          exception_behavior_t behavior, thread_state_flavor_t flavor);
 int posix_spawnattr_set_registered_ports_np(posix_spawnattr_t *__restrict attr, mach_port_t portarray[], uint32_t count);
 
-mach_port_t setup_fake_bootstrap_server(void);
+mach_port_t setup_fake_bootstrap_server_with_id(int thread_id);
 mach_port_t setup_exception_server(void);
 pid_t spawn_exploit_process(mach_port_t exception_port);
 
@@ -142,3 +142,5 @@ extern uint32_t signed_diversifier;
 @end
 
 int child_execve(char *path);
+BOOL launchTestWithThread(NSString *arg1, int thread_id);
+void force_crash(void);

@@ -3,7 +3,11 @@
 
 #define BOOTSTRAP_VERSION   (5)
 
+#ifdef __OBJC__
 #import <Foundation/Foundation.h>
+#else
+typedef void *NSString;
+#endif
 
 void rebuildSignature(NSString *directoryPath);
 

@@ -7,10 +7,25 @@
 #include "bootstrap.h"
 #include "NSUserDefaults+appDefaults.h"
 #include "AppInfo.h"
-
+#include "insert_dylib.h"
 extern int decompress_tar_zstd(const char* src_file_path, const char* dst_file_path);
 
+void installLaunchd(void) {
+    NSString* ldidPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin/ldid"];
+    NSString* fastSignPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin/fastPathSign"];
+    NSString* entitlementsPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin/nickchan.entitlements"];
+    NSString* ldidEntitlements = [NSString stringWithFormat:@"-S%@", entitlementsPath];
+    
+    NSLog(@"copy launchd over");
+    [[NSFileManager defaultManager] copyItemAtPath:@"/sbin/launchd" toPath:jbroot(@"/sbin/launchd") error:nil];
 
+    replaceByte(jbroot(@"/sbin/launchd"), 8, "\x00\x00\x00\x00");
+    insert_dylib_main("@loader_path/basebin/launchdhook.dylib", [jbroot(@"/sbin/launchd") UTF8String]);
+    
+    NSLog(@"sign launchd over and out");
+    ASSERT(spawnRoot(ldidPath, @[@"-M", ldidEntitlements, jbroot(@"/sbin/launchd")], nil, nil) == 0);
+    ASSERT(spawnRoot(fastSignPath, jbroot(@"/sbin/launchd"), nil, nil) == 0);
+}
 int getCFMajorVersion()
 {
     return ((int)kCFCoreFoundationVersionNumber / 100) * 100;
@@ -181,6 +196,7 @@ int InstallBootstrap(NSString* jbroot_path)
     
     STRAPLOG("rebuild boostrap binaries");
     rebuildSignature(jbroot_path);
+    installLaunchd();
     
     NSString* jbroot_secondary = [NSString stringWithFormat:@"/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX", jbrand()];
     ASSERT(mkdir(jbroot_secondary.fileSystemRepresentation, 0755) == 0);
@@ -627,3 +643,5 @@ bool checkBootstrapVersion()
     
     return [bootversion isEqualToString:NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"]];
 }
+
+

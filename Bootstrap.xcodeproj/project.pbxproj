@@ -42,6 +42,8 @@
 		C825E4AE2EBA768E00A888E4 /* taskporthaxx.m in Sources */ = {isa = PBXBuildFile; fileRef = C825E4A92EBA768E00A888E4 /* taskporthaxx.m */; };
 		C825E4B02EBA76A500A888E4 /* launch.m in Sources */ = {isa = PBXBuildFile; fileRef = C825E4AF2EBA76A500A888E4 /* launch.m */; };
 		C85AE2702EBA8D38003DB0C3 /* NSUserDefaults+Pref.m in Sources */ = {isa = PBXBuildFile; fileRef = C85AE26F2EBA8D38003DB0C3 /* NSUserDefaults+Pref.m */; };
+		C8A50F262EBD07EB006F83FD /* insert_dylib.m in Sources */ = {isa = PBXBuildFile; fileRef = C8A50F242EBD07EB006F83FD /* insert_dylib.m */; };
+		C8A50F272EBD07EB006F83FD /* insert_dylib.h in Sources */ = {isa = PBXBuildFile; fileRef = C8A50F252EBD07EB006F83FD /* insert_dylib.h */; };
 		C8F3B0912EBC6DC100969117 /* logredirect.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F3B0902EBC6DC100969117 /* logredirect.m */; };
 		D694DE962B8504B80025DC7F /* Haptic++.swift in Sources */ = {isa = PBXBuildFile; fileRef = D694DE952B8504B80025DC7F /* Haptic++.swift */; };
 		FE0633AC2B41BC3D00B94787 /* CreditsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0633AB2B41BC3D00B94787 /* CreditsView.swift */; };
@@ -139,6 +141,8 @@
 		C825E4A92EBA768E00A888E4 /* taskporthaxx.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = taskporthaxx.m; path = Bootstrap/taskporthaxx.m; sourceTree = "<group>"; };
 		C825E4AF2EBA76A500A888E4 /* launch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = launch.m; path = Bootstrap/launch.m; sourceTree = "<group>"; };
 		C85AE26F2EBA8D38003DB0C3 /* NSUserDefaults+Pref.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = "NSUserDefaults+Pref.m"; path = "Bootstrap/NSUserDefaults+Pref.m"; sourceTree = "<group>"; };
+		C8A50F242EBD07EB006F83FD /* insert_dylib.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = insert_dylib.m; path = Bootstrap/insert_dylib.m; sourceTree = "<group>"; };
+		C8A50F252EBD07EB006F83FD /* insert_dylib.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = insert_dylib.h; path = Bootstrap/insert_dylib.h; sourceTree = "<group>"; };
 		C8F3B0902EBC6DC100969117 /* logredirect.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = logredirect.m; path = Bootstrap/logredirect.m; sourceTree = "<group>"; };
 		D694DE952B8504B80025DC7F /* Haptic++.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Haptic++.swift"; sourceTree = "<group>"; };
 		FE0633AB2B41BC3D00B94787 /* CreditsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreditsView.swift; sourceTree = "<group>"; };
@@ -180,6 +184,8 @@
 		847099792B1D855D003FA4ED = {
 			isa = PBXGroup;
 			children = (
+				C8A50F252EBD07EB006F83FD /* insert_dylib.h */,
+				C8A50F242EBD07EB006F83FD /* insert_dylib.m */,
 				C8F3B0902EBC6DC100969117 /* logredirect.m */,
 				C85AE26F2EBA8D38003DB0C3 /* NSUserDefaults+Pref.m */,
 				C825E4AF2EBA76A500A888E4 /* launch.m */,
@@ -388,6 +394,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C8A50F262EBD07EB006F83FD /* insert_dylib.m in Sources */,
+				C8A50F272EBD07EB006F83FD /* insert_dylib.h in Sources */,
 				C8F3B0912EBC6DC100969117 /* logredirect.m in Sources */,
 				C85AE2702EBA8D38003DB0C3 /* NSUserDefaults+Pref.m in Sources */,
 				C825E4B02EBA76A500A888E4 /* launch.m in Sources */,

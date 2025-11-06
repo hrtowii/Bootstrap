@@ -478,3 +478,12 @@ NSString* getBootSession()
     
     return @(uuid);
 }
+
+void replaceByte(NSString *filePath, int offset, const char *replacement)
+{
+    const char *fileCString = [filePath UTF8String];
+    FILE *file = fopen(fileCString, "r+");
+    fseek(file, offset, SEEK_SET);
+    fwrite(replacement, sizeof(char), 4, file);
+    fclose(file);
+}
