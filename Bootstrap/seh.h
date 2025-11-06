@@ -11,9 +11,9 @@
         userInfo:nil];\
 } while(0)
 
-#undef assert
-#define assert   #error#
-
+// #undef assert
+// #define assert   #error#
+//
 #define ASSERT(...)  do{if(!(__VA_ARGS__)) {\
 @throw [NSException\
         exceptionWithName:@"ASSERT"\

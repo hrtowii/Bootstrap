@@ -30,9 +30,9 @@ clean::
 	rm -rf ./packages/*
 
 before-package::
-	rm -rf ./packages
+	# rm -rf ./packages
 	cp -a ./strapfiles ./.theos/_/Applications/Bootstrap.app/
-	ldid -Sentitlements.plist ./.theos/_/Applications/Bootstrap.app/Bootstrap
+	ldid -Sentitlements2.plist ./.theos/_/Applications/Bootstrap.app/Bootstrap
 	mkdir -p ./packages/Payload
 	cp -R ./.theos/_/Applications/Bootstrap.app ./packages/Payload
 	cd ./packages && zip -mry ./Bootstrap.tipa ./Payload

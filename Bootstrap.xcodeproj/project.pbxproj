@@ -34,8 +34,15 @@
 		847099982B1D855E003FA4ED /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 847099972B1D855E003FA4ED /* main.m */; };
 		847099A32B1D868F003FA4ED /* Makefile in Sources */ = {isa = PBXBuildFile; fileRef = 847099A02B1D868F003FA4ED /* Makefile */; };
 		847099A52B1D9686003FA4ED /* Bootstrap.m in Sources */ = {isa = PBXBuildFile; fileRef = 847099A42B1D9686003FA4ED /* Bootstrap.m */; };
-		84A551A82DA47BCC0015CE66 /* roothideapp.deb in Frameworks */ = {isa = PBXBuildFile; fileRef = 84A551A72DA47BCC0015CE66 /* roothideapp.deb */; };
 		84A551A92DA47BD00015CE66 /* roothideapp.deb in Resources */ = {isa = PBXBuildFile; fileRef = 84A551A72DA47BCC0015CE66 /* roothideapp.deb */; };
+		C825E4AA2EBA768E00A888E4 /* mach_excServer.c in Sources */ = {isa = PBXBuildFile; fileRef = C825E4A52EBA768E00A888E4 /* mach_excServer.c */; };
+		C825E4AB2EBA768E00A888E4 /* fake_bootstrap_server.m in Sources */ = {isa = PBXBuildFile; fileRef = C825E4A62EBA768E00A888E4 /* fake_bootstrap_server.m */; };
+		C825E4AC2EBA768E00A888E4 /* exception_handler.m in Sources */ = {isa = PBXBuildFile; fileRef = C825E4A72EBA768E00A888E4 /* exception_handler.m */; };
+		C825E4AD2EBA768E00A888E4 /* troller.m in Sources */ = {isa = PBXBuildFile; fileRef = C825E4A82EBA768E00A888E4 /* troller.m */; };
+		C825E4AE2EBA768E00A888E4 /* taskporthaxx.m in Sources */ = {isa = PBXBuildFile; fileRef = C825E4A92EBA768E00A888E4 /* taskporthaxx.m */; };
+		C825E4B02EBA76A500A888E4 /* launch.m in Sources */ = {isa = PBXBuildFile; fileRef = C825E4AF2EBA76A500A888E4 /* launch.m */; };
+		C85AE2702EBA8D38003DB0C3 /* NSUserDefaults+Pref.m in Sources */ = {isa = PBXBuildFile; fileRef = C85AE26F2EBA8D38003DB0C3 /* NSUserDefaults+Pref.m */; };
+		C8F3B0912EBC6DC100969117 /* logredirect.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F3B0902EBC6DC100969117 /* logredirect.m */; };
 		D694DE962B8504B80025DC7F /* Haptic++.swift in Sources */ = {isa = PBXBuildFile; fileRef = D694DE952B8504B80025DC7F /* Haptic++.swift */; };
 		FE0633AC2B41BC3D00B94787 /* CreditsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0633AB2B41BC3D00B94787 /* CreditsView.swift */; };
 		FE0633AE2B41BCD900B94787 /* OptionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0633AD2B41BCD900B94787 /* OptionsView.swift */; };
@@ -125,6 +132,14 @@
 		847099A42B1D9686003FA4ED /* Bootstrap.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Bootstrap.m; sourceTree = "<group>"; };
 		84A551A72DA47BCC0015CE66 /* roothideapp.deb */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = roothideapp.deb; sourceTree = "<group>"; };
 		8595F05E2B578D9900681FC6 /* vi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = vi; path = vi.lproj/Localizable.strings; sourceTree = "<group>"; };
+		C825E4A52EBA768E00A888E4 /* mach_excServer.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = mach_excServer.c; path = Bootstrap/mach_excServer.c; sourceTree = "<group>"; };
+		C825E4A62EBA768E00A888E4 /* fake_bootstrap_server.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = fake_bootstrap_server.m; path = Bootstrap/fake_bootstrap_server.m; sourceTree = "<group>"; };
+		C825E4A72EBA768E00A888E4 /* exception_handler.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = exception_handler.m; path = Bootstrap/exception_handler.m; sourceTree = "<group>"; };
+		C825E4A82EBA768E00A888E4 /* troller.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = troller.m; path = Bootstrap/troller.m; sourceTree = "<group>"; };
+		C825E4A92EBA768E00A888E4 /* taskporthaxx.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = taskporthaxx.m; path = Bootstrap/taskporthaxx.m; sourceTree = "<group>"; };
+		C825E4AF2EBA76A500A888E4 /* launch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = launch.m; path = Bootstrap/launch.m; sourceTree = "<group>"; };
+		C85AE26F2EBA8D38003DB0C3 /* NSUserDefaults+Pref.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = "NSUserDefaults+Pref.m"; path = "Bootstrap/NSUserDefaults+Pref.m"; sourceTree = "<group>"; };
+		C8F3B0902EBC6DC100969117 /* logredirect.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = logredirect.m; path = Bootstrap/logredirect.m; sourceTree = "<group>"; };
 		D694DE952B8504B80025DC7F /* Haptic++.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "Haptic++.swift"; sourceTree = "<group>"; };
 		FE0633AB2B41BC3D00B94787 /* CreditsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreditsView.swift; sourceTree = "<group>"; };
 		FE0633AD2B41BCD900B94787 /* OptionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OptionsView.swift; sourceTree = "<group>"; };
@@ -144,7 +159,6 @@
 				84364F3D2B323FB600E90B58 /* MBProgressHUD.framework in Frameworks */,
 				FE895FF12B418FDC00A16882 /* FluidGradient in Frameworks */,
 				84438D622B2654EB00A1E407 /* MobileContainerManager.framework in Frameworks */,
-				84A551A82DA47BCC0015CE66 /* roothideapp.deb in Frameworks */,
 				84438D602B26546E00A1E407 /* MobileCoreServices.framework in Frameworks */,
 				84438D502B260F8200A1E407 /* libzstd in Frameworks */,
 			);
@@ -166,6 +180,14 @@
 		847099792B1D855D003FA4ED = {
 			isa = PBXGroup;
 			children = (
+				C8F3B0902EBC6DC100969117 /* logredirect.m */,
+				C85AE26F2EBA8D38003DB0C3 /* NSUserDefaults+Pref.m */,
+				C825E4AF2EBA76A500A888E4 /* launch.m */,
+				C825E4A72EBA768E00A888E4 /* exception_handler.m */,
+				C825E4A62EBA768E00A888E4 /* fake_bootstrap_server.m */,
+				C825E4A52EBA768E00A888E4 /* mach_excServer.c */,
+				C825E4A92EBA768E00A888E4 /* taskporthaxx.m */,
+				C825E4A82EBA768E00A888E4 /* troller.m */,
 				84364F462B3C5D4600E90B58 /* libkrw0-dummy.deb */,
 				84438D582B261FBA00A1E407 /* basebin */,
 				84438D432B26090D00A1E407 /* sileo.deb */,
@@ -366,6 +388,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C8F3B0912EBC6DC100969117 /* logredirect.m in Sources */,
+				C85AE2702EBA8D38003DB0C3 /* NSUserDefaults+Pref.m in Sources */,
+				C825E4B02EBA76A500A888E4 /* launch.m in Sources */,
+				C825E4AA2EBA768E00A888E4 /* mach_excServer.c in Sources */,
+				C825E4AB2EBA768E00A888E4 /* fake_bootstrap_server.m in Sources */,
+				C825E4AC2EBA768E00A888E4 /* exception_handler.m in Sources */,
+				C825E4AD2EBA768E00A888E4 /* troller.m in Sources */,
+				C825E4AE2EBA768E00A888E4 /* taskporthaxx.m in Sources */,
 				D694DE962B8504B80025DC7F /* Haptic++.swift in Sources */,
 				847099A32B1D868F003FA4ED /* Makefile in Sources */,
 				8470998D2B1D855D003FA4ED /* ViewController.m in Sources */,
@@ -581,7 +611,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)",
 				);
-				MARKETING_VERSION = "1.4";
+				MARKETING_VERSION = 1.4;
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.roothide.Bootstrap;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -623,7 +653,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)",
 				);
-				MARKETING_VERSION = "1.4";
+				MARKETING_VERSION = 1.4;
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = com.roothide.Bootstrap;
 				PRODUCT_NAME = "$(TARGET_NAME)";

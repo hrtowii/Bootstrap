@@ -2,6 +2,7 @@
 #import "AppDelegate.h"
 #include "NSUserDefaults+appDefaults.h"
 #include "common.h"
+#include "taskporthaxx.h"
 
 int main(int argc, char * argv[]) {
 
@@ -32,16 +33,38 @@ int main(int argc, char * argv[]) {
                 reboot(0);
                 sleep(5);
                 exit(-1);
+            } else if (strcmp(argv[1], "dtsecurity") == 0) {
+            NSString *execDir = @"/var/db/com.apple.xpc.roleaccountd.staging/exec";
+            [NSFileManager.defaultManager createDirectoryAtPath:execDir withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *outDir = @"/var/db/com.apple.xpc.roleaccountd.staging/exec/Bootstrap.xpc";
+            if (![[NSFileManager defaultManager] fileExistsAtPath:outDir]) {
+                NSError *error = nil;
+                [NSFileManager.defaultManager copyItemAtPath:@"/System/Library/PrivateFrameworks/DVTInstrumentsFoundation.framework/XPCServices/com.apple.dt.instruments.dtsecurity.xpc" toPath:outDir error:&error];
+                if (error) {
+                    NSLog(@"Failed to copy dtsecurity.xpc: %@", error);
+                    return 1;
+                }
+            }
+            return child_execve("/var/db/com.apple.xpc.roleaccountd.staging/exec/Bootstrap.xpc/com.apple.dt.instruments.dtsecurity");
+            
+            } else if (strcmp(argv[1], "child") == 0) {
+            return child_execve("/usr/libexec/xpcproxy");
+        
+        } else if (strcmp(argv[1], "test") == 0) {
+            mach_port_t exc = setup_exception_server();
+            spawn_exploit_process(exc);
+        
             } else if(strcmp(argv[1], "testprefs")==0) {
                 SYSLOG("locale=%@", [NSUserDefaults.appDefaults valueForKey:@"locale"]);
                 [NSUserDefaults.appDefaults setValue:@"CA" forKey:@"locale"];
                 [NSUserDefaults.appDefaults synchronize];
                 SYSLOG("locale=%@", [NSUserDefaults.appDefaults valueForKey:@"locale"]);
                 exit(0);
-            }
+            } else {
             
             SYSLOG("unknown cmd: %s", argv[1]);
             ABORT();
+            }
         }
         @catch (NSException *exception)
         {

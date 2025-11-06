@@ -1,5 +1,3 @@
-#!/bin/sh
-
 set -e
 
 PREV_DIR=$(pwd)

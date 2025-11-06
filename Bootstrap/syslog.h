@@ -4,7 +4,7 @@
 
 #include <sys/syslog.h>
 
-#define NSLog #error#
+// #define NSLog #error#
 
 #define SYSLOG(fmt, ...) do { fmt[0];\
 openlog("bootstrap",LOG_PID,LOG_AUTH);\

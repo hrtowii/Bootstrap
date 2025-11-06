@@ -18,3 +18,6 @@ void URLSchemesAction(BOOL enable);
 void hideAllCTBugApps();
 void unhideAllCTBugApps();
 BOOL isAllCTBugAppsHidden();
+
+void arbCallButtonTapped();
+void testButtonTapped();

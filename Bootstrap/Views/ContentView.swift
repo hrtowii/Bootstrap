@@ -88,9 +88,31 @@ struct MainView: View {
                     .frame(height:20)
                     .padding(.top, -20)
                     .padding(10)
-                }
-                
+                } 
                 VStack {
+                    Button {
+                        Haptic.shared.play(.light)
+                        arbCallButtonTapped() 
+                    } label: {
+                        Label(
+                            title: {Text("try launchd haxx").bold()},
+                            icon: {Image(systemName: "flame.fill") }
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(25)
+                    }
+                    Button {
+                        Haptic.shared.play(.light)
+                        testButtonTapped()
+                    } label: {
+                        Label(
+                            title: {Text("dtsecurity test").bold()},
+                            icon: {Image(systemName: "flame.fill") }
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(25)
+                    }
+
                     Button {
                         Haptic.shared.play(.light)
                         bootstrapAction()
