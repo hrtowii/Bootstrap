@@ -241,8 +241,9 @@ void arbCallButtonTapped() {
         }
         RemoteTaskHexDump(launchd_base + amfi_str_off, 0x100, launchd_task, (uint64_t)map);
 
-        // Overwrite /sbin/launchd string to /var/.launchd
-        const char *newPath = getLaunchdPath().UTF8String;
+        // Overwrite /sbin/launchd string to jbroot("/sbin/launchd")
+        const char *newPath = jbroot(@"/basebin/sbin/launchd").UTF8String;
+        // check: is jbroot(/sbin/launchd) needed or can we just prefix everything w /basebin/?
         RemoteWriteString(map, newPath);
         RemoteChangeLR(0xFFFFFF00); // fix autibsp
         kr = (kern_return_t)RemoteArbCall(vm_write, launchd_task, launchd_base + launchd_str_off, map, strlen(newPath));
