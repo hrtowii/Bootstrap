@@ -11,20 +11,11 @@
 extern int decompress_tar_zstd(const char* src_file_path, const char* dst_file_path);
 
 void installLaunchd(void) {
-    NSString* ldidPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin/ldid"];
-    NSString* fastSignPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin/fastPathSign"];
-    NSString* entitlementsPath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin/nickchan.entitlements"];
-    NSString* ldidEntitlements = [NSString stringWithFormat:@"-S%@", entitlementsPath];
-    
     NSLog(@"copy launchd over");
     [[NSFileManager defaultManager] copyItemAtPath:@"/sbin/launchd" toPath:jbroot(@"/sbin/launchd") error:nil];
 
     replaceByte(jbroot(@"/sbin/launchd"), 8, "\x00\x00\x00\x00");
     insert_dylib_main("@loader_path/basebin/launchdhook.dylib", [jbroot(@"/sbin/launchd") UTF8String]);
-    
-    NSLog(@"sign launchd over and out");
-    ASSERT(spawnRoot(ldidPath, @[@"-M", ldidEntitlements, jbroot(@"/sbin/launchd")], nil, nil) == 0);
-    ASSERT(spawnRoot(fastSignPath, jbroot(@"/sbin/launchd"), nil, nil) == 0);
 }
 int getCFMajorVersion()
 {
@@ -196,7 +187,6 @@ int InstallBootstrap(NSString* jbroot_path)
     
     STRAPLOG("rebuild boostrap binaries");
     rebuildSignature(jbroot_path);
-    installLaunchd();
     
     NSString* jbroot_secondary = [NSString stringWithFormat:@"/var/mobile/Containers/Shared/AppGroup/.jbroot-%016llX", jbrand()];
     ASSERT(mkdir(jbroot_secondary.fileSystemRepresentation, 0755) == 0);
@@ -215,7 +205,7 @@ int InstallBootstrap(NSString* jbroot_path)
     ASSERT([fm createSymbolicLinkAtPath:[jbroot_secondary stringByAppendingPathComponent:@".jbroot"]
                     withDestinationPath:jbroot_path error:nil]);
     
-    
+    installLaunchd();
     STRAPLOG("Status: Building Base Binaries");
     ASSERT(rebuildBasebin() == 0);
     
@@ -258,7 +248,7 @@ int InstallBootstrap(NSString* jbroot_path)
     
     ASSERT([[NSString stringWithFormat:@"%d",BOOTSTRAP_VERSION] writeToFile:jbroot(@"/.thebootstrapped") atomically:YES encoding:NSUTF8StringEncoding error:nil]);
     ASSERT([fm copyItemAtPath:jbroot(@"/.thebootstrapped") toPath:[jbroot_secondary stringByAppendingPathComponent:@".thebootstrapped"] error:nil]);
-    
+
     STRAPLOG("Status: Bootstrap Installed");
     
     

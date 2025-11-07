@@ -7,6 +7,7 @@
 
 @import Foundation;
 #import "taskporthaxx.h"
+#import "ViewController.h"
 
 BOOL launchTest(NSString *arg1) {
     NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
@@ -64,7 +65,8 @@ BOOL launchTest(NSString *arg1) {
     return kr == KERN_SUCCESS;
 }
 
-BOOL launchTestWithThread(NSString *arg1, int thread_id) {
+pid_t launchTestWithThread(NSString *arg1, int thread_id) {
+
     NSString *bundleID = [NSString stringWithFormat:@"%@.%d", NSBundle.mainBundle.bundleIdentifier, thread_id];
     NSString *execPath = NSBundle.mainBundle.executablePath;
     NSDictionary *plist = @{
@@ -113,8 +115,18 @@ BOOL launchTestWithThread(NSString *arg1, int thread_id) {
 
     xpc_object_t result;
     kern_return_t kr = _launch_job_routine(0x3e8, xpcDict, &result);
-    printf("Launch job routine for thread %d returned: %s\n", thread_id, mach_error_string(kr));
+    printf("job thread %d ret %s\n", thread_id, mach_error_string(kr));
 
-    return kr == KERN_SUCCESS;
+    if (kr != KERN_SUCCESS) {
+        return -1;
+    }
+
+    pid_t launched_pid = -1;
+    if (result && xpc_get_type(result) == XPC_TYPE_DICTIONARY) {
+        launched_pid = xpc_dictionary_get_int64(result, "pid");
+        printf("thread %d with pid %d\n", thread_id, launched_pid);
+    }
+
+    return launched_pid;
 }
 

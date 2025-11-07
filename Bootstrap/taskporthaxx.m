@@ -1,4 +1,6 @@
 #include "taskporthaxx.h"
+#include <signal.h>
+#include <unistd.h>
 int child_execve(char *path) {
     mach_port_t exception_port = MACH_PORT_NULL;
     mach_port_t fake_bootstrap_port = MACH_PORT_NULL;
@@ -12,7 +14,7 @@ int child_execve(char *path) {
     char exception_service_name[128];
     char bootstrap_service_name[128];
     snprintf(exception_service_name, sizeof(exception_service_name), "com.roothide.bootstrap.exception_server.%d", thread_id);
-    snprintf(bootstrap_service_name, sizeof(bootstrap_service_name), "com.roothide.bootstrap.fake_bootstrap_port.%d", thread_id);
+    snprintf(bootstrap_service_name, sizeof(bootstrap_service_name), "com.roothide.bootstrap.fake_bootstrap_port");
 
     bootstrap_look_up(bootstrap_port, exception_service_name, &exception_port);
     assert(exception_port != MACH_PORT_NULL);
@@ -65,4 +67,63 @@ pid_t spawn_exploit_process(mach_port_t exception_port) {
     return pid;
 }
 
+bool check_exception_server_exists(int thread_id) {
+    mach_port_t exception_port = MACH_PORT_NULL;
+    char service_name[128];
+    snprintf(service_name, sizeof(service_name), "com.roothide.bootstrap.exception_server.%d", thread_id);
+
+    kern_return_t kr = bootstrap_look_up(bootstrap_port, service_name, &exception_port);
+    if (kr == KERN_SUCCESS && exception_port != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), exception_port);
+        return true;
+    }
+    return false;
+}
+
+bool check_fake_bootstrap_server_exists(int thread_id) {
+    mach_port_t fake_bootstrap_port = MACH_PORT_NULL;
+    char service_name[128];
+    snprintf(service_name, sizeof(service_name), "com.roothide.bootstrap.fake_bootstrap_port.%d", thread_id);
+
+    kern_return_t kr = bootstrap_look_up(bootstrap_port, service_name, &fake_bootstrap_port);
+    if (kr == KERN_SUCCESS && fake_bootstrap_port != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), fake_bootstrap_port);
+        return true;
+    }
+    return false;
+}
+
+void cleanup_bootstrap_servers(int thread_count) {
+    for (int i = 0; i < thread_count; i++) {
+        mach_port_t exception_port = MACH_PORT_NULL;
+        mach_port_t fake_bootstrap_port = MACH_PORT_NULL;
+
+        char exception_service_name[128];
+        char bootstrap_service_name[128];
+        snprintf(exception_service_name, sizeof(exception_service_name), "com.roothide.bootstrap.exception_server.%d", i);
+        snprintf(bootstrap_service_name, sizeof(bootstrap_service_name), "com.roothide.bootstrap.fake_bootstrap_port.%d", i);
+
+        kern_return_t kr = bootstrap_look_up(bootstrap_port, exception_service_name, &exception_port);
+        if (kr == KERN_SUCCESS && exception_port != MACH_PORT_NULL) {
+            mach_port_deallocate(mach_task_self(), exception_port);
+        }
+
+        kr = bootstrap_look_up(bootstrap_port, bootstrap_service_name, &fake_bootstrap_port);
+        if (kr == KERN_SUCCESS && fake_bootstrap_port != MACH_PORT_NULL) {
+            mach_port_deallocate(mach_task_self(), fake_bootstrap_port);
+        }
+    }
+}
+
+void kill_child_processes(pid_t *pids, int count) {
+    for (int i = 0; i < count; i++) {
+        if (pids[i] > 0) {
+            if (kill(pids[i], 0) == 0) {
+                printf("kill %d\n", pids[i]);
+                kill(pids[i], SIGTERM);
+            }
+            pids[i] = -1;
+        }
+    }
+}
 

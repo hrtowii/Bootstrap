@@ -15,7 +15,7 @@ int xpc_pipe_try_receive(mach_port_t p, xpc_object_t *message, mach_port_t *recv
 int xpc_receive_mach_msg(mach_msg_header_t *msg, uint64_t x1, uint64_t x2, uint64_t x3, xpc_object_t *request);
 
 boolean_t dispatch_mig_callback(mach_msg_header_t *request, mach_msg_header_t *reply) {
-    printf("dispatch_mig_callback asked to handle msgh_id 0x%x\n", request->msgh_id);
+   NSLog(@"dispatch_mig_callback asked to handle msgh_id 0x%x\n", request->msgh_id);
     if (request->msgh_id == 0x400002ce && request) {
         xpc_object_t reqObj;
         request->msgh_id = 0x40000000;
@@ -44,29 +44,22 @@ void fake_bootstrap_server(mach_port_t server_port) {
     do {
         kr = xpc_pipe_try_receive(server_port, NULL, NULL, dispatch_mig_callback, 0x4000, 0);
         if (kr != KERN_SUCCESS) {
-            printf("xpc_pipe_try_receive failed\n");
+           NSLog(@"xpc_pipe_try_receive failed\n");
             continue;
         }
     } while(true);
 }
 
-static void* fake_bootstrap_server_thread_func(void* arg) {
-    mach_port_t server_port = (mach_port_t)arg;
-    fake_bootstrap_server(server_port);
-    return NULL;
-}
-
-mach_port_t setup_fake_bootstrap_server_with_id(int thread_id) {
+mach_port_t setup_fake_bootstrap_server(void) {
     mach_port_t server_port;
     kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &server_port);
     assert(kr == KERN_SUCCESS);
     kr = mach_port_insert_right(mach_task_self(), server_port, server_port, MACH_MSG_TYPE_MAKE_SEND);
     assert(kr == KERN_SUCCESS);
-    char port_name[PATH_MAX];
-    snprintf(port_name, sizeof(port_name), "com.roothide.bootstrap.fake_bootstrap_port.%d", thread_id); 
-    kr = bootstrap_register(bootstrap_port, port_name, server_port);
+    kr = bootstrap_register(bootstrap_port, "com.roothide.bootstrap.fake_bootstrap_port", server_port);
     assert(kr == KERN_SUCCESS);
-    pthread_t fake_thread;
-    pthread_create(&fake_thread, NULL, fake_bootstrap_server_thread_func, (void*)server_port);
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        fake_bootstrap_server(server_port);
+    });
     return server_port;
 }

@@ -74,9 +74,14 @@ int posix_spawnattr_setexceptionports_np(posix_spawnattr_t *attr,
          exception_behavior_t behavior, thread_state_flavor_t flavor);
 int posix_spawnattr_set_registered_ports_np(posix_spawnattr_t *__restrict attr, mach_port_t portarray[], uint32_t count);
 
-mach_port_t setup_fake_bootstrap_server_with_id(int thread_id);
+mach_port_t setup_fake_bootstrap_server(void);
 mach_port_t setup_exception_server(void);
 pid_t spawn_exploit_process(mach_port_t exception_port);
+
+bool check_exception_server_exists(int thread_id);
+bool check_fake_bootstrap_server_exists(int thread_id);
+void cleanup_bootstrap_servers(int thread_count);
+void kill_child_processes(pid_t *pids, int count);
 
 #define __DARWIN_ARM_THREAD_STATE64_FLAGS_IB_SIGNED_LR 0x2
 #define __DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_PC 0x4
@@ -142,5 +147,5 @@ extern uint32_t signed_diversifier;
 @end
 
 int child_execve(char *path);
-BOOL launchTestWithThread(NSString *arg1, int thread_id);
+pid_t launchTestWithThread(NSString *arg1, int thread_id);
 void force_crash(void);

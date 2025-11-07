@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 
 @interface ViewController : UIViewController
+- (void)arbCallButtonTappedFromSwiftUI;
 @end
 
 void initFromSwiftUI();
