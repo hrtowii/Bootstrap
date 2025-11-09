@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <assert.h>
 #include "common.h"
+#define DTSECURITY_WAIT_FOR_DEBUGGER 0
+
 #ifdef __arm64e__
 #   define xpaci(x) __asm__ volatile("xpaci %0" : "+r"(x))
 #else
@@ -28,20 +30,12 @@
                 return;\
                 }
 
-#define RemoteArbCall(pc, ...) RemoteArbCallInternal((#pc), (uint64_t)(pc), (uint64_t[]){__VA_ARGS__}, sizeof((uint64_t[]){__VA_ARGS__})/sizeof(uint64_t))
-uint64_t RemoteArbCallInternal(char *name, uint64_t pc, uint64_t args[], int argCount);
-void RemoteChangeLR(uint64_t newLR);
-uint64_t RemoteSignPACIA(uint64_t address, uint64_t modifier);
-uint64_t RemoteRead64(uint64_t address);
-uint32_t RemoteRead32(uint64_t address);
-void RemoteWrite32(uint64_t address, uint32_t value);
-void RemoteWrite64(uint64_t address, uint64_t value);
-void RemoteWriteMemory(uint64_t address, const void *data, size_t length);
-void RemoteWriteString(uint64_t address, const char *string);
-void RemoteDetach(void);
-void RemoteTaskHexDump(uint64_t addr, size_t size, mach_port_t task, uint64_t map);
 
+#define PT_CONTINUE 7
+#define PT_KILL 8
+#define PT_STEP 9
 #define PT_DETACH 11
+#define PT_THUPDATE 13
 #define PT_ATTACHEXC 14
 
 extern uintptr_t brX8Address, changeLRAddress, paciaAddress;
@@ -113,8 +107,8 @@ struct xpc_global_data {
   // ...
 };
 
-BOOL launchTest(NSString *arg1);
 
+pid_t launchTest(NSString *excPortName, NSString *arg1, BOOL suspended);
 kern_return_t _launch_job_routine(int selector, xpc_object_t request, id *result);
 xpc_object_t _CFXPCCreateXPCObjectFromCFObject(id object);
 xpc_object_t xpc_pipe_create_from_port(mach_port_t port, uint32_t flags);
@@ -146,6 +140,16 @@ extern uint32_t signed_diversifier;
 @property(nonatomic) NSUInteger offsetAMFI;
 @end
 
-int child_execve(char *path);
-pid_t launchTestWithThread(NSString *arg1, int thread_id);
-void force_crash(void);
+ int child_execve(char *exceptionPortName, char *path);
+ pid_t launchTestWithThread(NSString *arg1, int thread_id);
+void register_child_pid(int thread_id, pid_t pid);
+void cleanup_multithreaded_exceptions(void);
+
+int load_trust_cache(NSString *tcPath);
+
+int spawn_stage1_prepare_process(void);
+int child_stage1_prepare(void);
+int ptrace(int _request, pid_t _pid, caddr_t _addr, int _data);
+extern mach_port_t dtsecurityTaskPort;
+
+

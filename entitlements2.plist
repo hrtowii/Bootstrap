@@ -334,7 +334,14 @@
 		<string>IOGPUDeviceUserClient</string>
 		<string>AGXDeviceUserClient</string>
 		<string>IOHDIXControllerUserClient</string>
-		<string>IOSurfaceRootUserClient</string>
+      <string>IOSurfaceRootUserClient</string>
+      <string>AppleMobileFileIntegrityUserClient</string>
+            <string>IOSurfaceRootUserClient</string>
+            <string>AGXDeviceUserClient</string>
+            <string>AGXSharedUserClient</string>
+            <string>AGXCommandQueue</string>
+            <string>AGXDevice</string>
+
 	</array>
 	<key>com.apple.security.system-container</key>
 	<true/>

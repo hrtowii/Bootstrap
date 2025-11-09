@@ -82,7 +82,7 @@ struct MainView: View {
                             .opacity(0.5)
                     })
                 }
-                .padding(20)
+                .padding(5)
                 
                 if newVersionAvailable {
                     Button {
@@ -228,7 +228,7 @@ struct MainView: View {
                                            alignment: .topLeading)
                                     .transition(.opacity)
                                     .textSelection(.enabled)
-                                    .font(.custom("Menlo", size: 15))
+                                    .font(.custom("Menlo", size: 12))
                                     .foregroundColor(.white)
                                     .id("LogText")
                                     .onChange(of: LogString) { newValue in
@@ -251,8 +251,8 @@ struct MainView: View {
                         }
                         .frame(maxHeight: 200)
                     }
-                    .frame(width: 253)
-                    .padding(20)
+                    .frame(width: 400)
+                    .padding(10)
                     .background {
                         Color(.black)
                             .cornerRadius(18)

@@ -9,7 +9,31 @@
 #import "taskporthaxx.h"
 #import "ViewController.h"
 
-BOOL launchTest(NSString *arg1) {
+int spawn_stage1_prepare_process(void) {
+    pid_t pid;
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_set_persona_np(&attr, /*persona_id=*/99, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
+    posix_spawnattr_set_persona_uid_np(&attr, 0);
+    posix_spawnattr_set_persona_gid_np(&attr, 0);
+    char *argv[] = {**_NSGetArgv(), "updatebrain-prepare", NULL};
+    int ret = posix_spawn(&pid, argv[0], NULL, &attr, argv, environ);
+    if (ret) {
+        perror("posix_spawn");
+        return 1;
+    }
+    printf("Spawned stage1 prepare process with PID %d\n", pid);
+    // Wait for it to exit
+    int status;
+    waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        printf("Stage1 prepare process failed\n");
+    }
+    return status;
+}
+
+pid_t launchTest(NSString *excPortName, NSString *arg1, BOOL suspended)
+{
     NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
     NSString *execPath = NSBundle.mainBundle.executablePath;
     NSDictionary *plist = @{
@@ -32,7 +56,9 @@ BOOL launchTest(NSString *arg1) {
         @"EnvironmentVariables": @{
             @"TMPDIR": @"/var/tmp",
             @"HOME": @"/var/root",
-            @"CFFIXED_USER_HOME": @"/var/root"
+            @"CFFIXED_USER_HOME": @"/var/root",
+            @"HAXX_EXCEPTION_PORT_NAME": excPortName,
+            @"HAXX_START_SUSPENDED": @(suspended),
         },
         @"_AdditionalProperties": arg1 ? @{} : @{
             @"RunningBoard": @{
@@ -62,7 +88,12 @@ BOOL launchTest(NSString *arg1) {
     kern_return_t kr = _launch_job_routine(0x3e8, xpcDict, &result);
     printf("Launch job routine returned: %s\n", mach_error_string(kr));
     
-    return kr == KERN_SUCCESS;
+    pid_t launched_pid = -1;
+    if (kr == KERN_SUCCESS && result && xpc_get_type(result) == XPC_TYPE_DICTIONARY) {
+        launched_pid = (pid_t)xpc_dictionary_get_int64(result, "pid");
+    }
+
+    return launched_pid;
 }
 
 pid_t launchTestWithThread(NSString *arg1, int thread_id) {

@@ -14,10 +14,97 @@ void installLaunchd(void) {
     NSLog(@"copy launchd over");
     [[NSFileManager defaultManager] copyItemAtPath:@"/sbin/launchd" toPath:jbroot(@"/sbin/launchd") error:nil];
 
-    replaceByte(jbroot(@"/sbin/launchd"), 8, "\x00\x00\x00\x00");
+    // replaceByte(jbroot(@"/sbin/launchd"), 8, "\x00\x00\x00\x00");
     insert_dylib_main("@loader_path/basebin/launchdhook.dylib", [jbroot(@"/sbin/launchd") UTF8String]);
 }
-int getCFMajorVersion()
+
+void installClone(NSString *path) {
+    NSLog(@"Signing %@", path);
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    if ([fm fileExistsAtPath:[path stringByDeletingLastPathComponent]] == true) {
+        [fm removeItemAtPath:[path stringByDeletingLastPathComponent] error:nil];
+    }
+    [fm copyItemAtPath:[path stringByDeletingLastPathComponent]
+                toPath:jbroot([path stringByDeletingLastPathComponent])
+                 error:nil];
+
+    [fm copyItemAtPath:path toPath:jbroot(path) error:nil];
+
+    NSString *hook_file = @"generalhooksigned.dylib";
+    const char *insertionSpecifier = "@loader_path/generalhooksigned.dylib";
+    if ([path isEqual:@"/usr/libexec/xpcproxy"]) {
+        hook_file = @"xpcproxyhooksigned.dylib";
+        insertionSpecifier = "@loader_path/xpcproxyhooksigned.dylib";
+    }
+
+    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
+    NSString *hookSource = [bundlePath stringByAppendingPathComponent:hook_file];
+    NSString *hookDest = jbroot([[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:hook_file]);
+    if ([fm fileExistsAtPath:hookDest]) {
+        [fm removeItemAtPath:hookDest error:nil];
+    }
+    if (![fm copyItemAtPath:hookSource toPath:hookDest error:nil]) {
+        NSLog(@"Failed to copy hook dylib %@ to %@", hookSource, hookDest);
+    }
+
+    int insertRet = insert_dylib_main(insertionSpecifier, [jbroot(path) UTF8String]);
+    NSLog(@"insert_dylib_main ret %d for %@", insertRet, path);
+
+    NSString *ldidPath = [bundlePath stringByAppendingPathComponent:@"basebin/ldid"];
+    NSString *fastPathSignPath = [bundlePath stringByAppendingPathComponent:@"basebin/fastPathSign"];
+
+    NSString *entsOut = nil;
+    NSString *entsErr = nil;
+    int ldidStatus = spawnRoot(ldidPath, @[@"-e", path], &entsOut, &entsErr);
+
+    NSString *tmpEntitlementsPath = nil;
+    if (ldidStatus == 0 && entsOut.length > 0) {
+        tmpEntitlementsPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                               [NSString stringWithFormat:@"ents-%u.plist", arc4random_uniform(1000000000)]];
+        [entsOut writeToFile:tmpEntitlementsPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } else {
+        NSLog(@"Warning: failed to extract entitlements for %@ (status=%d): %@", path, ldidStatus, entsErr);
+    }
+
+    NSMutableArray<NSString *> *ldidArgs = [NSMutableArray arrayWithObject:@"-M"];
+    if (tmpEntitlementsPath) {
+        [ldidArgs addObject:[NSString stringWithFormat:@"-S%@", tmpEntitlementsPath]];
+    }
+    [ldidArgs addObject:jbroot(path)];
+
+    NSString *stdOut = nil;
+    NSString *stdErr = nil;
+    int signStatus = spawnRoot(ldidPath, ldidArgs, &stdOut, &stdErr);
+    if (signStatus != 0) {
+        NSLog(@"ldid sign failed (%d) for %@: %@ (out=%@)", signStatus, jbroot(path), stdErr, stdOut);
+    }
+
+    spawnRoot(fastPathSignPath, @[jbroot(path)], &stdOut, &stdErr);
+
+    if (tmpEntitlementsPath) {
+        [fm removeItemAtPath:tmpEntitlementsPath error:nil];
+    }
+
+    NSString *symlink_path = [[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:@".jbroot"];
+    if ([fm fileExistsAtPath:jbroot(symlink_path)]) {
+        [fm removeItemAtPath:jbroot(symlink_path) error:nil];
+    }
+    [fm createSymbolicLinkAtPath:jbroot(symlink_path) withDestinationPath:jbroot(@"/") error:nil];
+}
+
+void install_cfprefsd(void) {
+    [[NSFileManager defaultManager] createDirectoryAtPath: jbroot(@"/usr/sbin/") withIntermediateDirectories:YES attributes:nil error:nil];
+
+    [[NSFileManager defaultManager] removeItemAtPath:jbroot(@"/usr/sbin/cfprefsd") error:nil];
+    // Replace usprebooterappPath with main bundle path
+    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
+    NSString *shimSource = [bundlePath stringByAppendingPathComponent:@"cfprefsdshimsignedinjected"];
+    [[NSFileManager defaultManager] copyItemAtPath:shimSource toPath:jbroot(@"/usr/sbin/cfprefsd") error:nil];
+     
+    // create a symlink to jbroot named .jbroot
+    [[NSFileManager defaultManager] createSymbolicLinkAtPath:jbroot(@"/usr/sbin/.jbroot") withDestinationPath:jbroot(@"/") error:nil];
+}int getCFMajorVersion()
 {
     return ((int)kCFCoreFoundationVersionNumber / 100) * 100;
 }
@@ -204,8 +291,16 @@ int InstallBootstrap(NSString* jbroot_path)
     
     ASSERT([fm createSymbolicLinkAtPath:[jbroot_secondary stringByAppendingPathComponent:@".jbroot"]
                     withDestinationPath:jbroot_path error:nil]);
-    
+    NSLog(@"installing hooks");
     installLaunchd();
+    installClone(@"/System/Library/CoreServices/SpringBoard.app/SpringBoard");
+    installClone(@"/Applications/MediaRemoteUI.app/MediaRemoteUI");
+    installClone(@"/usr/libexec/xpcproxy");
+    installClone(@"/usr/libexec/installd");
+    installClone(@"/usr/libexec/nfcd");
+    installClone(@"/usr/libexec/lsd");
+    installClone(@"/usr/sbin/mediaserverd");
+
     STRAPLOG("Status: Building Base Binaries");
     ASSERT(rebuildBasebin() == 0);
     

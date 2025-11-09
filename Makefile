@@ -23,6 +23,7 @@ Bootstrap_XCODEFLAGS = \
 Bootstrap_XCODE_SCHEME = $(XCODE_SCHEME)
 #Bootstrap_CODESIGN_FLAGS = -Sentitlements.plist
 Bootstrap_INSTALL_PATH = /Applications
+Bootstrap_FRAMEWORKS = UIKit CoreGraphics CoreServices IOKit
 
 include $(THEOS_MAKE_PATH)/xcodeproj.mk
 
@@ -32,7 +33,7 @@ clean::
 before-package::
 	# rm -rf ./packages
 	cp -a ./strapfiles ./.theos/_/Applications/Bootstrap.app/
-	ldid -Sentitlements2.plist ./.theos/_/Applications/Bootstrap.app/Bootstrap
+	ldid -Sentitlements3.plist ./.theos/_/Applications/Bootstrap.app/Bootstrap
 	mkdir -p ./packages/Payload
 	cp -R ./.theos/_/Applications/Bootstrap.app ./packages/Payload
 	cd ./packages && zip -mry ./Bootstrap.tipa ./Payload

