@@ -75,5 +75,7 @@ void killAllForExecutable(const char* path);
                                                       user:(BOOL)arg3;
 @end
 void replaceByte(NSString *filePath, int offset, const char *replacement);
+NSString *launchdPath(void);
+void generateLaunchdPath(void);
 
 #endif /* utils_h */

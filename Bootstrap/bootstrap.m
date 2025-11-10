@@ -11,15 +11,97 @@
 extern int decompress_tar_zstd(const char* src_file_path, const char* dst_file_path);
 
 void installLaunchd(void) {
-    NSLog(@"copy launchd over");
-    [[NSFileManager defaultManager] copyItemAtPath:@"/sbin/launchd" toPath:jbroot(@"/sbin/launchd") error:nil];
+    NSLog(@"installLaunchd: start");
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *err = nil;
 
-    // replaceByte(jbroot(@"/sbin/launchd"), 8, "\x00\x00\x00\x00");
-    insert_dylib_main("@loader_path/basebin/launchdhook.dylib", [jbroot(@"/sbin/launchd") UTF8String]);
+    NSString *src = @"/sbin/launchd";
+    NSString *dst = jbroot(@"/sbin/launchd");
+
+    // Check if launchdpath.txt already exists
+    NSString *launchdPathFile = jbroot(@"/launchdpath.txt");
+    if ([fm fileExistsAtPath:launchdPathFile]) {
+        // Path already exists, use generateLaunchdPath to handle cleanup/recreation
+        NSLog(@"installLaunchd: existing path found, regenerating symlink");
+        generateLaunchdPath();
+    } else {
+        // First time installation, create initial symlink path
+        NSLog(@"installLaunchd: first time installation, creating initial symlink");
+        NSString* tempHash = [NSString stringWithFormat:@"%08x", arc4random() & 0xFFFFFFFF];
+        NSString* tempLaunchdPath = [NSString stringWithFormat:@"/var/%@", tempHash];
+
+        NSString* finalTempPath = tempLaunchdPath;
+        if (finalTempPath.length > 13) {
+            finalTempPath = [finalTempPath substringToIndex:13];
+        } else if (finalTempPath.length < 13) {
+            finalTempPath = [finalTempPath stringByPaddingToLength:13 withString:@"0" startingAtIndex:0];
+        }
+
+        ASSERT([finalTempPath writeToFile:jbroot(@"/launchdpath.txt")
+                               atomically:YES
+                              encoding:NSUTF8StringEncoding
+                                 error:nil]);
+
+        NSString *prebootLink = finalTempPath;
+
+        [fm createDirectoryAtPath:[prebootLink stringByDeletingLastPathComponent]
+      withIntermediateDirectories:YES
+                       attributes:@{NSFilePosixPermissions:@0755}
+                            error:nil];
+
+        if (![fm createSymbolicLinkAtPath:prebootLink withDestinationPath:dst error:&err]) {
+            NSLog(@"installLaunchd: failed to create initial symlink: %@", err);
+        } else {
+            NSLog(@"installLaunchd: created initial symlink %@ → %@", prebootLink, dst);
+        }
+    }
+
+    // Common operations for both first-time install and rebuild
+    NSLog(@"installLaunchd: preparing launchd binary");
+
+    [fm createDirectoryAtPath:[dst stringByDeletingLastPathComponent]
+  withIntermediateDirectories:YES
+                   attributes:@{NSFilePosixPermissions:@0755}
+                        error:nil];
+
+    [fm removeItemAtPath:dst error:nil];
+
+    if (![fm copyItemAtPath:src toPath:dst error:&err]) {
+        NSLog(@"installLaunchd: copy failed: %@", err);
+        return;
+    }
+
+    replaceByte(dst, 8, "\x00\x00\x00\x00");
+    insert_dylib_main("@loader_path/../basebin/launchdhook.dylib", [dst UTF8String]);
+    NSLog(@"insert_dylib_main done for %@", dst);
+
+    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
+    NSString *ldidPath = [bundlePath stringByAppendingPathComponent:@"basebin/ldid"];
+    NSString *fastPathSignPath = [bundlePath stringByAppendingPathComponent:@"basebin/fastPathSign"];
+    NSString *entitlementsPath = [bundlePath stringByAppendingPathComponent:@"basebin/launchdentitlements.plist"];
+    NSString *ldidEntitlements = [NSString stringWithFormat:@"-S%@", entitlementsPath];
+
+    NSString *stdOut = nil;
+    NSString *stdErr = nil;
+    int signStatus = spawnRoot(ldidPath, @[@"-M", ldidEntitlements, dst], &stdOut, &stdErr);
+    if (signStatus != 0) {
+        NSLog(@"ldid sign failed (%d) for %@: %@ (out=%@)", signStatus, dst, stdErr, stdOut);
+    }
+
+    spawnRoot(fastPathSignPath, @[jbroot(dst)], &stdOut, &stdErr);
+
+    if (chmod(dst.fileSystemRepresentation, 0755) != 0) {
+        NSLog(@"installLaunchd: chmod 0755 failed: %s", strerror(errno));
+    }
+    if (chown(dst.fileSystemRepresentation, 0, 0) != 0) {
+        NSLog(@"installLaunchd: chown root:wheel failed: %s", strerror(errno));
+    }
+
+    NSLog(@"installLaunchd: done");
 }
 
 void installClone(NSString *path) {
-    NSLog(@"Signing %@", path);
+    NSLog(@"bootstrap: installClone %@", path);
     NSFileManager *fm = [NSFileManager defaultManager];
 
     if ([fm fileExistsAtPath:[path stringByDeletingLastPathComponent]] == true) {
@@ -33,58 +115,48 @@ void installClone(NSString *path) {
 
     NSString *hook_file = @"generalhooksigned.dylib";
     const char *insertionSpecifier = "@loader_path/generalhooksigned.dylib";
+
     if ([path isEqual:@"/usr/libexec/xpcproxy"]) {
         hook_file = @"xpcproxyhooksigned.dylib";
         insertionSpecifier = "@loader_path/xpcproxyhooksigned.dylib";
     }
 
-    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
-    NSString *hookSource = [bundlePath stringByAppendingPathComponent:hook_file];
-    NSString *hookDest = jbroot([[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:hook_file]);
+    NSString *hookSource = jbroot([@"/basebin" stringByAppendingPathComponent:hook_file]);
+    NSString *hookDest = jbroot([[path stringByDeletingLastPathComponent]
+                              stringByAppendingPathComponent:hook_file]);
+
     if ([fm fileExistsAtPath:hookDest]) {
         [fm removeItemAtPath:hookDest error:nil];
     }
-    if (![fm copyItemAtPath:hookSource toPath:hookDest error:nil]) {
-        NSLog(@"Failed to copy hook dylib %@ to %@", hookSource, hookDest);
+
+    NSError *err = nil;
+    if (![fm copyItemAtPath:hookSource toPath:hookDest error:&err]) {
+        NSLog(@"Failed to copy hook dylib %@ to %@: %@", hookSource, hookDest, err);
+    } else {
+    NSDictionary *attrs = @{
+        NSFilePosixPermissions: @(0755),
+        NSFileOwnerAccountName: @"root",
+        NSFileGroupOwnerAccountName: @"wheel"
+    };
+        [fm setAttributes:attrs ofItemAtPath:hookDest error:nil];
     }
 
     int insertRet = insert_dylib_main(insertionSpecifier, [jbroot(path) UTF8String]);
     NSLog(@"insert_dylib_main ret %d for %@", insertRet, path);
-
+    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
     NSString *ldidPath = [bundlePath stringByAppendingPathComponent:@"basebin/ldid"];
     NSString *fastPathSignPath = [bundlePath stringByAppendingPathComponent:@"basebin/fastPathSign"];
-
-    NSString *entsOut = nil;
-    NSString *entsErr = nil;
-    int ldidStatus = spawnRoot(ldidPath, @[@"-e", path], &entsOut, &entsErr);
-
-    NSString *tmpEntitlementsPath = nil;
-    if (ldidStatus == 0 && entsOut.length > 0) {
-        tmpEntitlementsPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                               [NSString stringWithFormat:@"ents-%u.plist", arc4random_uniform(1000000000)]];
-        [entsOut writeToFile:tmpEntitlementsPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    } else {
-        NSLog(@"Warning: failed to extract entitlements for %@ (status=%d): %@", path, ldidStatus, entsErr);
-    }
-
-    NSMutableArray<NSString *> *ldidArgs = [NSMutableArray arrayWithObject:@"-M"];
-    if (tmpEntitlementsPath) {
-        [ldidArgs addObject:[NSString stringWithFormat:@"-S%@", tmpEntitlementsPath]];
-    }
-    [ldidArgs addObject:jbroot(path)];
+    NSString *entitlementsPath = [bundlePath stringByAppendingPathComponent:@"basebin/nickchan.entitlements"];
+    NSString *ldidEntitlements = [NSString stringWithFormat:@"-S%@", entitlementsPath];
 
     NSString *stdOut = nil;
     NSString *stdErr = nil;
-    int signStatus = spawnRoot(ldidPath, ldidArgs, &stdOut, &stdErr);
+    int signStatus = spawnRoot(ldidPath, @[@"-M", ldidEntitlements, jbroot(path)], &stdOut, &stdErr);
     if (signStatus != 0) {
         NSLog(@"ldid sign failed (%d) for %@: %@ (out=%@)", signStatus, jbroot(path), stdErr, stdOut);
     }
 
     spawnRoot(fastPathSignPath, @[jbroot(path)], &stdOut, &stdErr);
-
-    if (tmpEntitlementsPath) {
-        [fm removeItemAtPath:tmpEntitlementsPath error:nil];
-    }
 
     NSString *symlink_path = [[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:@".jbroot"];
     if ([fm fileExistsAtPath:jbroot(symlink_path)]) {
@@ -92,14 +164,13 @@ void installClone(NSString *path) {
     }
     [fm createSymbolicLinkAtPath:jbroot(symlink_path) withDestinationPath:jbroot(@"/") error:nil];
 }
-
 void install_cfprefsd(void) {
     [[NSFileManager defaultManager] createDirectoryAtPath: jbroot(@"/usr/sbin/") withIntermediateDirectories:YES attributes:nil error:nil];
 
     [[NSFileManager defaultManager] removeItemAtPath:jbroot(@"/usr/sbin/cfprefsd") error:nil];
     // Replace usprebooterappPath with main bundle path
     NSString *bundlePath = NSBundle.mainBundle.bundlePath;
-    NSString *shimSource = [bundlePath stringByAppendingPathComponent:@"cfprefsdshimsignedinjected"];
+    NSString *shimSource = [jbroot(@"/basebin") stringByAppendingPathComponent:@"cfprefsdshimsignedinjected"];
     [[NSFileManager defaultManager] copyItemAtPath:shimSource toPath:jbroot(@"/usr/sbin/cfprefsd") error:nil];
      
     // create a symlink to jbroot named .jbroot
@@ -215,6 +286,15 @@ int rebuildBasebin()
     
     unlink(jbroot(@"/basebin/.jbroot").fileSystemRepresentation);
     ASSERT([fm createSymbolicLinkAtPath:jbroot(@"/basebin/.jbroot") withDestinationPath:jbroot(@"/") error:nil]);
+    NSLog(@"reinstalling hooks");
+    installLaunchd();
+    installClone(@"/System/Library/CoreServices/SpringBoard.app/SpringBoard");
+    installClone(@"/Applications/MediaRemoteUI.app/MediaRemoteUI");
+    installClone(@"/usr/libexec/xpcproxy");
+    installClone(@"/usr/libexec/installd");
+    installClone(@"/usr/libexec/nfcd");
+    installClone(@"/usr/libexec/lsd");
+    installClone(@"/usr/sbin/mediaserverd");
     
     return 0;
 }
@@ -291,6 +371,9 @@ int InstallBootstrap(NSString* jbroot_path)
     
     ASSERT([fm createSymbolicLinkAtPath:[jbroot_secondary stringByAppendingPathComponent:@".jbroot"]
                     withDestinationPath:jbroot_path error:nil]);
+    STRAPLOG("Status: Building Base Binaries");
+    ASSERT(rebuildBasebin() == 0);
+
     NSLog(@"installing hooks");
     installLaunchd();
     installClone(@"/System/Library/CoreServices/SpringBoard.app/SpringBoard");
@@ -301,9 +384,6 @@ int InstallBootstrap(NSString* jbroot_path)
     installClone(@"/usr/libexec/lsd");
     installClone(@"/usr/sbin/mediaserverd");
 
-    STRAPLOG("Status: Building Base Binaries");
-    ASSERT(rebuildBasebin() == 0);
-    
     STRAPLOG("Status: Starting Bootstrapd");
     ASSERT(startBootstrapServer() == 0);
     
@@ -353,37 +433,45 @@ int InstallBootstrap(NSString* jbroot_path)
 int fixBootstrapSymlink(NSString* path)
 {
     const char* jbpath = jbroot(path).fileSystemRepresentation;
-    
-    struct stat st={0};
+    struct stat st = {0};
     ASSERT(lstat(jbpath, &st) == 0);
+    if ([path isEqualToString:@"/sbin/launchd"]) {
+        NSFileManager* fm = NSFileManager.defaultManager;
+        if (S_ISLNK(st.st_mode)) {
+            ASSERT(unlink(jbpath) == 0);
+            ASSERT(lstat(jbpath, &st) == 0);
+            ASSERT(!S_ISLNK(st.st_mode));
+        }
+        NSString* oldLaunchdPath = launchdPath();
+        if (oldLaunchdPath.length) {
+            [fm removeItemAtPath:oldLaunchdPath error:nil];
+        }
+        generateLaunchdPath();
+
+        ASSERT(access(jbpath, F_OK) == 0);
+        return 0;
+    }
     if (!S_ISLNK(st.st_mode)) {
         return 0;
     }
-    
     char link[PATH_MAX+1] = {0};
     ASSERT(readlink(jbpath, link, sizeof(link)-1) > 0);
-    if(link[0] != '/') {
+    if (link[0] != '/') {
         return 0;
     }
 
-    //stringByStandardizingPath won't remove /private/ prefix if the path does not exist on disk
     NSString* _link = @(link).stringByStandardizingPath.stringByResolvingSymlinksInPath;
-    
     NSString *pattern = @"^(?:/private)?/var/containers/Bundle/Application/\\.jbroot-[0-9A-Z]{16}(/.+)$";
     NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
     NSTextCheckingResult *match = [regex firstMatchInString:_link options:0 range:NSMakeRange(0, [_link length])];
     ASSERT(match != nil);
-    
     NSString* target = [_link substringWithRange:[match rangeAtIndex:1]];
     NSString* newlink = [@".jbroot" stringByAppendingPathComponent:target];
-    
     ASSERT(unlink(jbpath) == 0);
     ASSERT(symlink(newlink.fileSystemRepresentation, jbpath) == 0);
     ASSERT(access(jbpath, F_OK) == 0);
-    
     return 0;
 }
-
 int ReRandomizeBootstrap()
 {
     uint64_t prev_jbrand = jbrand();
@@ -417,13 +505,13 @@ int ReRandomizeBootstrap()
 
     STRAPLOG("Status: Building Base Binaries");
     ASSERT(rebuildBasebin() == 0);
-    
+
     STRAPLOG("Status: Starting Bootstrapd");
     ASSERT(startBootstrapServer() == 0);
-    
     STRAPLOG("Status: Updating Symlinks");
     ASSERT(fixBootstrapSymlink(@"/bin/sh") == 0);
     ASSERT(fixBootstrapSymlink(@"/usr/bin/sh") == 0);
+    fixBootstrapSymlink(@"/sbin/launchd");
     ASSERT(spawnBootstrap((char*[]){"/bin/sh", "/usr/libexec/updatelinks.sh", NULL}, nil, nil) == 0);
     
     return 0;

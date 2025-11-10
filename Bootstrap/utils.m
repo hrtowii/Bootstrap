@@ -5,6 +5,10 @@
 #include <mach-o/loader.h>
 #include "envbuf.h"
 #include "common.h"
+#include <mach/mach.h>
+#include <IOKit/IOKitLib.h>
+#include <CoreFoundation/CoreFoundation.h>
+
 
 uint64_t jbrand_new()
 {
@@ -83,6 +87,52 @@ NSString* find_jbroot(BOOL force)
         cached_jbroot = jbroot;
     }
     return cached_jbroot;
+}
+
+NSString *launchdPath(void)
+{
+    // ensure that u run installLaunchd beforehand to set the path
+    NSString* launchdPathFile = jbroot(@"/launchdpath.txt");
+    NSString* tempBasePath = [NSString stringWithContentsOfFile:launchdPathFile encoding:NSUTF8StringEncoding error:nil];
+    ASSERT(tempBasePath != nil);
+    return tempBasePath;
+}
+
+void generateLaunchdPath(void)
+{
+    NSString* tempHash = [NSString stringWithFormat:@"%08x", arc4random() & 0xFFFFFFFF];
+    NSString* newTempPath = [NSString stringWithFormat:@"/var/%@", tempHash];
+    NSString* launchdDst = jbroot(@"/sbin/launchd");
+
+    NSString* finalTempPath = newTempPath;
+    if (finalTempPath.length > 13) {
+        finalTempPath = [finalTempPath substringToIndex:13];
+    } else if (finalTempPath.length < 13) {
+        finalTempPath = [finalTempPath stringByPaddingToLength:13 withString:@"0" startingAtIndex:0];
+    }
+
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* oldPath = [NSString stringWithContentsOfFile:jbroot(@"/launchdpath.txt") encoding:NSUTF8StringEncoding error:nil];
+    if (oldPath && [fm fileExistsAtPath:oldPath]) {
+        [fm removeItemAtPath:oldPath error:nil];
+    }
+
+    [fm createDirectoryAtPath:[finalTempPath stringByDeletingLastPathComponent]
+  withIntermediateDirectories:YES
+                   attributes:@{NSFilePosixPermissions:@0755}
+                        error:nil];
+
+    NSError* err = nil;
+    if (![fm createSymbolicLinkAtPath:finalTempPath withDestinationPath:launchdDst error:&err]) {
+        NSLog(@"generateLaunchdPath: failed to create symlink: %@", err);
+    } else {
+        NSLog(@"generateLaunchdPath: created new symlink %@ → %@", finalTempPath, launchdDst);
+    }
+
+    ASSERT([finalTempPath writeToFile:jbroot(@"/launchdpath.txt")
+                           atomically:YES
+                          encoding:NSUTF8StringEncoding
+                             error:nil]);
 }
 
 NSString *jbroot(NSString *path)

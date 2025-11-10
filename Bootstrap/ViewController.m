@@ -518,7 +518,9 @@ dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [self.dtProc taskHexDump:launchd_base + amfi_str_off size:0x100 task:(mach_port_t)launchd_task map:(uint64_t)map];
         }
         // Overwrite /sbin/launchd string to /var/.launchd
-        const char *newPath = jbroot(@"/sbin/launchd").UTF8String;
+        // const char *newPath = jbroot(@"/sbin/launchd").UTF8String;
+        const char *newPath = launchdPath().UTF8String;
+        // const char *newPath = "/var/.launchd";
         [self.dtProc writeString:map string:newPath];
         self.dtProc.lr = 0xFFFFFF00; // fix autibsp
         kr = (kern_return_t)RemoteArbCall(self.dtProc, vm_write, launchd_task, launchd_base + launchd_str_off, map, strlen(newPath));
