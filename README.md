@@ -1,4 +1,13 @@
 # roothide Bootstrap
+## v2(?) launchd replacer
+* uses taskporthaxx: https://github.com/khanhduytran0/TaskPortHaxxApp/tree/pacbypass from DuyTranKhanh to overwrite launchd
+* doesn't need krw, works on 17.0 (-> 17.4 if CT bug found)
+
+## todo:
+* move bootstrapd logic to launchd
+* fix springboard, daemon hooks from serotonin / nathanlr
+* add more fixes (im lazy)
+
 
 [![GitHub stars](https://img.shields.io/github/stars/roothide/Bootstrap?style=social)](https://github.com/roothide/Bootstrap/stargazers)
 
