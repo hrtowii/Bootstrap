@@ -48,8 +48,11 @@
 		C871FAB72EC08A740002BF95 /* ProcessContext.m in Sources */ = {isa = PBXBuildFile; fileRef = C871FAB12EC08A740002BF95 /* ProcessContext.m */; };
 		C871FAB92EC08C490002BF95 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C871FAB82EC08C490002BF95 /* IOKit.framework */; };
 		C871FABB2EC0CC390002BF95 /* libarchive.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C871FABA2EC0CC390002BF95 /* libarchive.tbd */; };
+		C8772CF62EC5CC5A008C0EBC /* exepatch.c in Sources */ = {isa = PBXBuildFile; fileRef = C8772CF42EC5CC5A008C0EBC /* exepatch.c */; };
+		C8772CF72EC5CC5A008C0EBC /* exepatch.h in Sources */ = {isa = PBXBuildFile; fileRef = C8772CF52EC5CC5A008C0EBC /* exepatch.h */; };
 		C8A50F262EBD07EB006F83FD /* insert_dylib.m in Sources */ = {isa = PBXBuildFile; fileRef = C8A50F242EBD07EB006F83FD /* insert_dylib.m */; };
 		C8A50F272EBD07EB006F83FD /* insert_dylib.h in Sources */ = {isa = PBXBuildFile; fileRef = C8A50F252EBD07EB006F83FD /* insert_dylib.h */; };
+		C8D1DA1C2EC5D96500A67E14 /* libchoma.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C8772CF82EC5CC73008C0EBC /* libchoma.a */; };
 		C8F3B0912EBC6DC100969117 /* logredirect.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F3B0902EBC6DC100969117 /* logredirect.m */; };
 		D694DE962B8504B80025DC7F /* Haptic++.swift in Sources */ = {isa = PBXBuildFile; fileRef = D694DE952B8504B80025DC7F /* Haptic++.swift */; };
 		FE0633AC2B41BC3D00B94787 /* CreditsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0633AB2B41BC3D00B94787 /* CreditsView.swift */; };
@@ -156,6 +159,12 @@
 		C871FAB82EC08C490002BF95 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
 		C871FABA2EC0CC390002BF95 /* libarchive.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libarchive.tbd; path = usr/lib/libarchive.tbd; sourceTree = SDKROOT; };
 		C871FABC2EC0CC750002BF95 /* mach_excServer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = mach_excServer.h; path = Bootstrap/mach_excServer.h; sourceTree = "<group>"; };
+		C8772CF42EC5CC5A008C0EBC /* exepatch.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = exepatch.c; path = Bootstrap/exepatch.c; sourceTree = "<group>"; };
+		C8772CF52EC5CC5A008C0EBC /* exepatch.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = exepatch.h; path = Bootstrap/exepatch.h; sourceTree = "<group>"; };
+		C8772CF82EC5CC73008C0EBC /* libchoma.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libchoma.a; path = "basebin/ChOma-main/output/ios/lib/libchoma.a"; sourceTree = "<group>"; };
+		C8772CFA2EC5CC86008C0EBC /* include */ = {isa = PBXFileReference; lastKnownFileType = folder; name = include; path = "basebin/ChOma-main/output/ios/include"; sourceTree = "<group>"; };
+		C8772CFD2EC5D129008C0EBC /* libchoma.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libchoma.dylib; path = "basebin/ChOma-main/output/ios/lib/libchoma.dylib"; sourceTree = "<group>"; };
+		C8772D012EC5D4DD008C0EBC /* libchoma.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libchoma.a; path = Bootstrap/libchoma.a; sourceTree = "<group>"; };
 		C8A50F242EBD07EB006F83FD /* insert_dylib.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = insert_dylib.m; path = Bootstrap/insert_dylib.m; sourceTree = "<group>"; };
 		C8A50F252EBD07EB006F83FD /* insert_dylib.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = insert_dylib.h; path = Bootstrap/insert_dylib.h; sourceTree = "<group>"; };
 		C8F3B0902EBC6DC100969117 /* logredirect.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = logredirect.m; path = Bootstrap/logredirect.m; sourceTree = "<group>"; };
@@ -175,6 +184,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C8D1DA1C2EC5D96500A67E14 /* libchoma.a in Frameworks */,
 				C871FABB2EC0CC390002BF95 /* libarchive.tbd in Frameworks */,
 				C871FAB92EC08C490002BF95 /* IOKit.framework in Frameworks */,
 				84364F3D2B323FB600E90B58 /* MBProgressHUD.framework in Frameworks */,
@@ -191,6 +201,9 @@
 		84438D5E2B26546E00A1E407 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				C8772D012EC5D4DD008C0EBC /* libchoma.a */,
+				C8772CFD2EC5D129008C0EBC /* libchoma.dylib */,
+				C8772CF82EC5CC73008C0EBC /* libchoma.a */,
 				C871FABA2EC0CC390002BF95 /* libarchive.tbd */,
 				C871FAB82EC08C490002BF95 /* IOKit.framework */,
 				84364F3B2B323CE300E90B58 /* MBProgressHUD.framework */,
@@ -203,6 +216,9 @@
 		847099792B1D855D003FA4ED = {
 			isa = PBXGroup;
 			children = (
+				C8772CFA2EC5CC86008C0EBC /* include */,
+				C8772CF52EC5CC5A008C0EBC /* exepatch.h */,
+				C8772CF42EC5CC5A008C0EBC /* exepatch.c */,
 				C871FABC2EC0CC750002BF95 /* mach_excServer.h */,
 				C871FAAC2EC08A730002BF95 /* archive.h */,
 				C871FAAD2EC08A730002BF95 /* archive_entry.h */,
@@ -420,6 +436,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C8772CF62EC5CC5A008C0EBC /* exepatch.c in Sources */,
+				C8772CF72EC5CC5A008C0EBC /* exepatch.h in Sources */,
 				C871FAB22EC08A740002BF95 /* archive.h in Sources */,
 				C871FAB32EC08A740002BF95 /* archive_entry.h in Sources */,
 				C871FAB42EC08A740002BF95 /* unarchive.m in Sources */,
@@ -648,6 +666,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)",
+					"$(PROJECT_DIR)/Bootstrap",
 				);
 				MARKETING_VERSION = 1.4;
 				OTHER_LDFLAGS = "";
@@ -690,6 +709,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)",
+					"$(PROJECT_DIR)/Bootstrap",
 				);
 				MARKETING_VERSION = 1.4;
 				OTHER_LDFLAGS = "";

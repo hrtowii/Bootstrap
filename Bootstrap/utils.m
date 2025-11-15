@@ -129,10 +129,10 @@ void generateLaunchdPath(void)
         NSLog(@"generateLaunchdPath: created new symlink %@ → %@", finalTempPath, launchdDst);
     }
 
-    ASSERT([finalTempPath writeToFile:jbroot(@"/launchdpath.txt")
+    [finalTempPath writeToFile:jbroot(@"/launchdpath.txt")
                            atomically:YES
                           encoding:NSUTF8StringEncoding
-                             error:nil]);
+                             error:nil];
 }
 
 NSString *jbroot(NSString *path)

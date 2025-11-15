@@ -22,6 +22,7 @@ Bootstrap_XCODEFLAGS = \
 	AD_HOC_CODE_SIGNING_ALLOWED=YES
 Bootstrap_XCODE_SCHEME = $(XCODE_SCHEME)
 #Bootstrap_CODESIGN_FLAGS = -Sentitlements.plist
+Bootstrap_LDFLAGS = -L./ -lchoma
 Bootstrap_INSTALL_PATH = /Applications
 Bootstrap_FRAMEWORKS = UIKit CoreGraphics CoreServices IOKit
 

@@ -13,6 +13,7 @@ closelog();\
 } while(0)
 
 #define STRAPLOG(fmt, ...) do { fmt[0];\
+NSLog([NSString stringWithFormat: @fmt, ## __VA_ARGS__]);\
 SYSLOG(fmt, ## __VA_ARGS__);\
 fprintf(stdout, [NSString stringWithFormat:@fmt, ## __VA_ARGS__].UTF8String);\
 fprintf(stdout, "\n");\
